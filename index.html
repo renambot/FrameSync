@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>videoSync — frame-exact player</title>
+<style>
+  :root {
+    --bg: #0d1013;
+    --panel: #14181d;
+    --panel-edge: #1f262d;
+    --ink: #dfe5ea;
+    --muted: #79848d;
+    --amber: #ffb300;
+    --amber-dim: rgba(255, 179, 0, 0.35);
+    --mono: "SF Mono", "Cascadia Code", "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+    --sans: -apple-system, "Segoe UI", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    display: flex;
+    flex-direction: column;
+    padding: 16px clamp(12px, 3vw, 40px);
+    gap: 12px;
+  }
+
+  header {
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  header h1 {
+    font-family: var(--mono);
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--amber);
+  }
+  header h1 span { color: var(--muted); }
+  #file-info {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+    overflow-wrap: anywhere;
+  }
+  .sync-cluster {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .sync-cluster select { padding: 4px 8px; font-size: 12px; }
+  #sync-status {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--amber);
+    letter-spacing: 0.05em;
+  }
+
+  #error {
+    background: #2a1512;
+    border: 1px solid #5c2a22;
+    color: #ffb4a6;
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-size: 13px;
+  }
+
+  /* ------- stage ------- */
+  #stage {
+    flex: 1;
+    min-height: 200px;
+    background: #000;
+    border: 1px solid var(--panel-edge);
+    border-radius: 6px;
+    display: grid;
+    place-items: center;
+    position: relative;
+    overflow: hidden;
+  }
+  #stage.dragging { border-color: var(--amber); }
+  #screen {
+    max-width: 100%;
+    max-height: 100%;
+    display: none;
+  }
+  #stage.loaded #screen { display: block; }
+  #drop-hint {
+    color: var(--muted);
+    font-size: 14px;
+    text-align: center;
+    padding: 24px;
+    pointer-events: none;
+  }
+
+  /* ------- console panel ------- */
+  #console {
+    background: var(--panel);
+    border: 1px solid var(--panel-edge);
+    border-radius: 6px;
+    padding: 14px 18px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  #readout {
+    display: flex;
+    align-items: baseline;
+    gap: 28px;
+    flex-wrap: wrap;
+    font-family: var(--mono);
+  }
+  #timecode {
+    font-size: clamp(34px, 6vw, 56px);
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    color: var(--amber);
+    text-shadow: 0 0 18px var(--amber-dim);
+    font-variant-numeric: tabular-nums;
+  }
+  .readout-cell { display: flex; flex-direction: column; gap: 2px; }
+  .readout-cell .label {
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .readout-cell .value {
+    font-size: 20px;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+  }
+  .readout-cell .value .dim { color: var(--muted); }
+
+  /* ------- scrubber + GOP strip ------- */
+  #timeline { display: flex; flex-direction: column; gap: 0; }
+  #gop-strip {
+    width: 100%;
+    height: 18px;
+    display: block;
+  }
+  #scrubber {
+    width: 100%;
+    appearance: none;
+    -webkit-appearance: none;
+    height: 22px;
+    background: transparent;
+    cursor: pointer;
+  }
+  #scrubber:disabled { cursor: default; opacity: 0.4; }
+  #scrubber::-webkit-slider-runnable-track {
+    height: 4px;
+    background: var(--panel-edge);
+    border-radius: 2px;
+  }
+  #scrubber::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px; height: 14px;
+    margin-top: -5px;
+    border-radius: 50%;
+    background: var(--amber);
+    border: none;
+  }
+  #scrubber::-moz-range-track {
+    height: 4px;
+    background: var(--panel-edge);
+    border-radius: 2px;
+  }
+  #scrubber::-moz-range-thumb {
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: var(--amber);
+    border: none;
+  }
+
+  /* ------- transport ------- */
+  #transport {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  button, select, input[type="number"] {
+    font-family: var(--mono);
+    font-size: 14px;
+    color: var(--ink);
+    background: #1b2128;
+    border: 1px solid #2a333c;
+    border-radius: 4px;
+    padding: 7px 12px;
+  }
+  button { cursor: pointer; min-width: 44px; }
+  button:hover:not(:disabled) { border-color: var(--amber); color: var(--amber); }
+  button:disabled, select:disabled, input:disabled { opacity: 0.4; cursor: default; }
+  button:focus-visible, select:focus-visible, input:focus-visible, #scrubber:focus-visible {
+    outline: 2px solid var(--amber);
+    outline-offset: 1px;
+  }
+  #btn-play { min-width: 64px; }
+  #btn-open { margin-left: auto; }
+  #volume {
+    width: 90px;
+    appearance: none;
+    -webkit-appearance: none;
+    height: 22px;
+    background: transparent;
+    cursor: pointer;
+  }
+  #volume:disabled { cursor: default; opacity: 0.4; }
+  #volume::-webkit-slider-runnable-track {
+    height: 4px; background: var(--panel-edge); border-radius: 2px;
+  }
+  #volume::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 12px; height: 12px; margin-top: -4px;
+    border-radius: 50%; background: var(--muted); border: none;
+  }
+  #volume::-moz-range-track {
+    height: 4px; background: var(--panel-edge); border-radius: 2px;
+  }
+  #volume::-moz-range-thumb {
+    width: 12px; height: 12px; border-radius: 50%;
+    background: var(--muted); border: none;
+  }
+  .goto {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--muted);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  #frame-goto { width: 90px; }
+
+  footer {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    #timecode { transition: text-shadow 0.3s; }
+  }
+</style>
+</head>
+<body>
+  <header>
+    <h1>video<span>/</span>sync <span>· frame-exact WebCodecs player</span></h1>
+    <div id="file-info"></div>
+    <span class="sync-cluster">
+      <select id="role" title="Sync role" aria-label="Sync role">
+        <option value="solo" selected>solo</option>
+        <option value="master">master</option>
+        <option value="follower">follower</option>
+      </select>
+      <span id="sync-status"></span>
+    </span>
+  </header>
+
+  <div id="error" hidden></div>
+
+  <div id="stage">
+    <canvas id="screen"></canvas>
+    <p id="drop-hint">Drop an MP4 here, or choose a file.<br>
+      <small>Decoding runs entirely in this page — nothing is uploaded.</small></p>
+  </div>
+
+  <div id="console">
+    <div id="readout">
+      <div id="timecode" aria-live="off">--:--:--:--</div>
+      <div class="readout-cell">
+        <span class="label">Frame</span>
+        <span class="value"><span id="frame-now">—</span> <span class="dim">/ <span id="frame-total">—</span></span></span>
+      </div>
+      <div class="readout-cell">
+        <span class="label">Media time</span>
+        <span class="value" id="media-time">—</span>
+      </div>
+    </div>
+
+    <div id="timeline">
+      <canvas id="gop-strip" title="Keyframe positions (random-access points)"></canvas>
+      <input id="scrubber" type="range" min="0" max="0" step="1" value="0"
+             aria-label="Scrub by frame">
+    </div>
+
+    <div id="transport">
+      <button id="btn-jump-back" title="Back 1 second (Shift+←)">−1s</button>
+      <button id="btn-back" title="Previous frame (←)">◀︎</button>
+      <button id="btn-play" title="Play / pause (Space)" aria-label="Play (Space)">▶</button>
+      <button id="btn-fwd" title="Next frame (→)">▶︎</button>
+      <button id="btn-jump-fwd" title="Forward 1 second (Shift+→)">+1s</button>
+      <select id="rate" title="Playback rate">
+        <option value="0.1">0.1×</option>
+        <option value="0.25">0.25×</option>
+        <option value="0.5">0.5×</option>
+        <option value="1" selected>1×</option>
+        <option value="2">2×</option>
+      </select>
+      <label class="goto">Go to frame
+        <input id="frame-goto" type="number" min="0" step="1" placeholder="0">
+      </label>
+      <button id="btn-mute" title="Mute / unmute" aria-label="Mute or unmute audio" disabled>🔊</button>
+      <input id="volume" type="range" min="0" max="100" value="100"
+             title="Volume" aria-label="Volume" disabled>
+      <button id="btn-open">Open video…</button>
+      <input id="file-input" type="file" accept="video/mp4,video/quicktime,.mp4,.mov,.m4v" hidden>
+    </div>
+  </div>
+
+  <footer>
+    <span id="stats">decode queue 0 · buffered 0 · skipped for pacing 0</span>
+    <span>Space play · ←/→ step one frame · Shift+←/→ ±1 s · Home/End first/last frame</span>
+  </footer>
+
+  <script src="js/mp4box.all.min.js"></script>
+  <script src="js/demuxer.js"></script>
+  <script src="js/syncclient.js"></script>
+  <script src="js/audio.js"></script>
+  <script src="js/player.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>

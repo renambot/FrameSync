@@ -1,0 +1,5 @@
+.DS_Store
+.claude/
+# large local media in the project root (test/ clips are tracked)
+/*.mp4
+/*.mov
