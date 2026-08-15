@@ -179,7 +179,6 @@ function extractVideoDescription(file, trackId) {
  */
 function webCodecsAudioCodec(containerCodec) {
   const c = containerCodec.toLowerCase();
-  console.log('webCodecsAudioCodec remap', containerCodec, '→', c);
   if (c === 'mp4a.6b' || c === 'mp4a.69') return 'mp3';
   if (c.startsWith('opus')) return 'opus';
   return containerCodec; // AAC (mp4a.40.x) and anything else pass through
