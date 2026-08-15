@@ -7,8 +7,9 @@ media stack:
 - **WebCodecs** (`VideoDecoder`, `AudioDecoder`, `VideoFrame`,
   `EncodedVideoChunk`) — the page owns the decode pipeline instead of
   trusting `<video>.currentTime`.
-- **MP4Box.js** (vendored in `js/mp4box.all.min.js`) — demuxes the MP4 into a
-  full sample table held in memory, so every frame is addressable.
+- **MP4Box.js v2.4.1** (vendored as an ES module in `js/mp4box/`) — demuxes
+  the MP4 into a full sample table held in memory, so every frame is
+  addressable.
 - **Canvas 2D** — each `VideoFrame` is drawn explicitly; nothing is
   interpolated or dropped silently.
 - **Web Audio** — decoded AAC is scheduled sample-accurately on the
@@ -22,9 +23,10 @@ node server.js          # default port 8417
 ```
 
 The zero-dependency Node server serves the static files and provides the
-`/sync` WebSocket plus a `/status` JSON endpoint. For a single solo player,
-any static server (or even `file://`) works — all scripts are classic
-scripts, no modules, no build step.
+`/sync` WebSocket plus a `/status` JSON endpoint. For a single solo player
+any static server works — there is still no build step (the app is classic
+scripts; mp4box v2 loads as a native ES module, so `file://` no longer
+works — serve over HTTP).
 
 Drop any MP4/MOV (H.264, HEVC*, VP9, AV1 — whatever the browser's decoder
 supports) onto the stage. Requires Chrome/Edge 94+, Safari 16.4+, or
@@ -172,6 +174,7 @@ box=1:boxcolor=black@0.7:boxborderw=20" \
 
 - `index.html` — UI (no build step, no external requests)
 - `server.js` — zero-dep Node: static files, `/sync` WebSocket, `/status`
+- `js/mp4box/` — vendored MP4Box.js v2.4.1 (native ES module, bridged to `window.MP4Box`)
 - `js/demuxer.js` — MP4Box wrapper → decoder configs + sample tables (video + audio)
 - `js/player.js` — `FramePlayer`: decode pipeline, clock hierarchy, seek/step logic
 - `js/audio.js` — `AudioEngine`: AudioDecoder → sample-accurate Web Audio scheduling
@@ -180,8 +183,14 @@ box=1:boxcolor=black@0.7:boxborderw=20" \
 
 ## Current limitations
 
-- Audio codecs: AAC (`mp4a.40.x`) is the tested path; anything AudioDecoder
-  supports may work, Opus-in-MP4 would need `dOps` description extraction.
+- Audio codecs: AAC (`mp4a.40.x`, including QuickTime-style sample entries
+  with the `esds` nested in a `wave` box or missing entirely — the config is
+  repaired from the mdhd timescale and a minimal AudioSpecificConfig is
+  synthesized) and MP3-in-MP4 (`mp4a.6b`/`.69`, remapped to WebCodecs'
+  `mp3`). With several audio tracks the most decodable one is chosen
+  (AAC > MP3 > Opus/FLAC > AC-3). An unsupported or mid-stream-failing
+  audio track degrades to silent playback — video and sync are unaffected.
+  Opus-in-MP4 would still need `dOps` description extraction.
 - Whole file is held in memory (that's what makes random access instant);
   fine up to a few GB, not for streaming. For streaming, the same pipeline
   works with incremental `appendBuffer` + on-demand sample windows.

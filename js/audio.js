@@ -52,8 +52,15 @@ class AudioEngine {
     if (!('AudioDecoder' in window)) return false;
     try {
       const support = await AudioDecoder.isConfigSupported(config);
+      console.info('AudioEngine config:', JSON.stringify({
+        codec: config.codec,
+        sampleRate: config.sampleRate,
+        numberOfChannels: config.numberOfChannels,
+        descriptionBytes: config.description ? config.description.length : 0,
+      }), '→ supported:', support.supported);
       if (!support.supported) return false;
     } catch (e) {
+      console.info('AudioEngine isConfigSupported threw:', e);
       return false;
     }
     this.config = config;
@@ -96,7 +103,13 @@ class AudioEngine {
 
     this.decoder = new AudioDecoder({
       output: (data) => this._onData(data, gen),
-      error: (e) => console.warn('AudioDecoder error:', e),
+      // A decode error closes the codec; stop feeding it. The AudioContext
+      // stays up, so nowUs() keeps advancing and video playback continues —
+      // the rest of this play is just silent.
+      error: (e) => {
+        console.warn('AudioDecoder error — audio disabled for this playback:', e);
+        this._halt(gen);
+      },
     });
     this.decoder.configure(this.config);
 
@@ -111,25 +124,39 @@ class AudioEngine {
       Math.max(0, this.ctx.currentTime - this.ctxStartTime) * 1e6;
   }
 
+  _halt(gen) {
+    if (gen !== this.generation) return;
+    if (this.pumpTimer) { clearInterval(this.pumpTimer); this.pumpTimer = null; }
+    this.decoder = null; // it closed itself
+  }
+
   _pump(gen) {
     if (gen !== this.generation || !this.active) return;
+    if (!this.decoder || this.decoder.state === 'closed') { this._halt(gen); return; }
     const horizonUs = this.nowUs() + this.LOOKAHEAD * 1e6;
-    while (
-      this.feedPos < this.samples.length &&
-      this.samples[this.feedPos].ts < horizonUs &&
-      this.decoder.decodeQueueSize < 30
-    ) {
-      const s = this.samples[this.feedPos++];
-      this.decoder.decode(new EncodedAudioChunk({
-        type: 'key',
-        timestamp: s.ts,
-        duration: s.duration,
-        data: s.data,
-      }));
-    }
-    if (this.feedPos >= this.samples.length && !this.endFed) {
-      this.endFed = true;
-      this.decoder.flush().catch(() => {});
+    try {
+      while (
+        this.feedPos < this.samples.length &&
+        this.samples[this.feedPos].ts < horizonUs &&
+        this.decoder.decodeQueueSize < 30
+      ) {
+        const s = this.samples[this.feedPos++];
+        this.decoder.decode(new EncodedAudioChunk({
+          type: 'key',
+          timestamp: s.ts,
+          duration: s.duration,
+          data: s.data,
+        }));
+      }
+      if (this.feedPos >= this.samples.length && !this.endFed) {
+        this.endFed = true;
+        this.decoder.flush().catch(() => {});
+      }
+    } catch (e) {
+      // decode() on a codec that closed between checks — same failure mode
+      // as the error callback; degrade to silent playback.
+      console.warn('AudioDecoder feed failed — audio disabled for this playback:', e);
+      this._halt(gen);
     }
   }
 

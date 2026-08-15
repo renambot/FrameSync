@@ -1,7 +1,9 @@
 'use strict';
 
 /**
- * Demux an MP4 ArrayBuffer with MP4Box.js.
+ * Demux an MP4 ArrayBuffer with MP4Box.js v2 (vendored ES module in
+ * js/mp4box/, bridged onto window.MP4Box by index.html — demuxMP4 awaits
+ * that bridge, so classic-script callers never race the module load).
  * Resolves with:
  *   video — { config: VideoDecoderConfig, samples: [...] }  (decode order)
  *   audio — { config: AudioDecoderConfig, samples: [...] } or null
@@ -12,7 +14,8 @@
  * The whole file stays in memory, which is what makes random frame-exact
  * seeking cheap: any sample is addressable instantly.
  */
-function demuxMP4(arrayBuffer) {
+async function demuxMP4(arrayBuffer) {
+  await window.mp4boxReady;
   return new Promise((resolve, reject) => {
     const file = MP4Box.createFile();
     const videoSamples = [];
@@ -45,10 +48,10 @@ function demuxMP4(arrayBuffer) {
       if (description) videoConfig.description = description;
       file.setExtractionOptions(videoTrack.id, 'video', { nbSamples: 1000 });
 
-      audioTrack = mp4info.audioTracks && mp4info.audioTracks[0];
+      audioTrack = pickAudioTrack(mp4info.audioTracks);
       if (audioTrack) {
         audioConfig = {
-          codec: audioTrack.codec,
+          codec: webCodecsAudioCodec(audioTrack.codec),
           sampleRate: audioTrack.audio.sample_rate,
           numberOfChannels: audioTrack.audio.channel_count,
         };
@@ -63,6 +66,7 @@ function demuxMP4(arrayBuffer) {
             audioConfig.numberOfChannels = parsed.channels;
           }
         }
+        fixupAudioConfig(audioConfig, file, audioTrack.id);
         file.setExtractionOptions(audioTrack.id, 'audio', { nbSamples: 1000 });
       }
 
@@ -82,8 +86,11 @@ function demuxMP4(arrayBuffer) {
       }
     };
 
+    // v2 wants an MP4BoxBuffer, which is just an ArrayBuffer carrying a
+    // fileStart marker — brand the buffer in place rather than paying
+    // MP4BoxBuffer.fromArrayBuffer's full copy (files can be hundreds of MB).
     arrayBuffer.fileStart = 0;
-    file.appendBuffer(arrayBuffer);
+    file.appendBuffer(arrayBuffer, /* last: */ true);
     file.flush();
 
     // MP4Box extraction runs synchronously inside appendBuffer/flush;
@@ -156,12 +163,43 @@ function extractVideoDescription(file, trackId) {
   for (const entry of trak.mdia.minf.stbl.stsd.entries) {
     const box = entry.avcC || entry.hvcC;
     if (box) {
-      const stream = new DataStream(undefined, 0, DataStream.BIG_ENDIAN);
+      const { DataStream, Endianness } = MP4Box;
+      const stream = new DataStream(undefined, 0, Endianness.BIG_ENDIAN);
       box.write(stream);
       return new Uint8Array(stream.buffer, 8); // strip the 8-byte box header
     }
   }
   return undefined;
+}
+
+/**
+ * Container codec string → WebCodecs AudioDecoder codec string.
+ * The important remap: MP3 muxed in MP4 announces itself as mp4a.6b/.69
+ * (MPEG-1/2 audio object types), but AudioDecoder wants plain "mp3".
+ */
+function webCodecsAudioCodec(containerCodec) {
+  const c = containerCodec.toLowerCase();
+  console.log('webCodecsAudioCodec remap', containerCodec, '→', c);
+  if (c === 'mp4a.6b' || c === 'mp4a.69') return 'mp3';
+  if (c.startsWith('opus')) return 'opus';
+  return containerCodec; // AAC (mp4a.40.x) and anything else pass through
+}
+
+/**
+ * Files can carry several audio tracks (e.g. Big Buck Bunny ships MP3 and
+ * AC-3). Prefer the one WebCodecs is most likely to decode instead of
+ * blindly taking track 0.
+ */
+function pickAudioTrack(tracks) {
+  if (!tracks || !tracks.length) return null;
+  const score = (t) => {
+    const c = t.codec.toLowerCase();
+    if (c.startsWith('mp4a.40')) return 3;              // AAC
+    if (c === 'mp4a.6b' || c === 'mp4a.69') return 2;   // MP3
+    if (c.startsWith('opus') || c.startsWith('flac')) return 1;
+    return 0;                                           // AC-3 etc.
+  };
+  return [...tracks].sort((a, b) => score(b) - score(a))[0];
 }
 
 /**
@@ -172,13 +210,58 @@ function extractAudioSpecificConfig(file, trackId) {
   try {
     const trak = file.getTrackById(trackId);
     for (const entry of trak.mdia.minf.stbl.stsd.entries) {
-      const esds = entry.esds;
+      // QuickTime-style entries (SoundDescription v1/v2) nest the esds
+      // inside a 'wave' extension box, so search the entry's box tree
+      // instead of expecting esds at the top level.
+      const esds = findEsds(entry);
       const dcd = esds && esds.esd && esds.esd.descs && esds.esd.descs[0];
       const dsi = dcd && dcd.descs && dcd.descs[0];
       if (dsi && dsi.data) return new Uint8Array(dsi.data);
     }
   } catch (e) { /* non-AAC audio; try configuring without a description */ }
   return undefined;
+}
+
+function findEsds(box, depth = 0) {
+  if (!box || depth > 3) return null;
+  if (box.esds) return box.esds;
+  if (box.type === 'esds') return box;
+  for (const child of box.boxes || []) {
+    const found = findEsds(child, depth + 1);
+    if (found) return found;
+  }
+  return null;
+}
+
+/**
+ * Repair configs from QuickTime-style sample entries, whose legacy stsd
+ * fields are placeholders (channels=3, rate=1.0). The mdhd timescale of an
+ * audio track equals its sample rate, which gives a trustworthy fallback.
+ * For AAC with no recoverable AudioSpecificConfig, synthesize a minimal one
+ * (AAC-LC + rate + channels) — without a description, AudioDecoder assumes
+ * ADTS framing and dies on raw MP4 samples.
+ */
+function fixupAudioConfig(config, file, trackId) {
+  const trak = file.getTrackById(trackId);
+  const mdhdRate = trak.mdia.mdhd.timescale;
+  if (!(config.sampleRate >= 4000) && mdhdRate >= 4000) config.sampleRate = mdhdRate;
+  if (!(config.numberOfChannels >= 1 && config.numberOfChannels <= 32)) config.numberOfChannels = 2;
+
+  if (!config.description && config.codec.startsWith('mp4a.40')) {
+    const rates = [96000, 88200, 64000, 48000, 44100, 32000,
+                   24000, 22050, 16000, 12000, 11025, 8000, 7350];
+    const sfi = rates.indexOf(config.sampleRate);
+    // Placeholder channel counts (the QT '3' with a bogus rate) default to stereo.
+    const chan = (config.numberOfChannels === 3 && mdhdRate !== config.sampleRate) ? 2
+      : Math.min(config.numberOfChannels, 7);
+    if (sfi >= 0 && chan >= 1) {
+      config.description = new Uint8Array([
+        (2 << 3) | (sfi >> 1),          // AOT 2 (AAC-LC) + sfi high bits
+        ((sfi & 1) << 7) | (chan << 3), // sfi low bit + channel config
+      ]);
+      config.numberOfChannels = chan;
+    }
+  }
 }
 
 /** Sample rate and channel count from the first bytes of an AAC ASC. */

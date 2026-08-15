@@ -23,7 +23,7 @@ const crypto = require('crypto');
 const PORT = Number(process.argv[2] || 8417);
 const ROOT = __dirname;
 const MIME = {
-  '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css',
+  '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css',
   '.json': 'application/json', '.md': 'text/plain; charset=utf-8',
   '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.m4v': 'video/mp4',
 };

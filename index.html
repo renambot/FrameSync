@@ -91,6 +91,13 @@
     background: #000;
     cursor: none;
   }
+  /* Windowed, the canvas renders at native size (1:1 pixel inspection);
+     fullscreen, it scales to fill the screen, letterboxed. */
+  #stage:fullscreen #screen {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+  }
   #screen {
     max-width: 100%;
     max-height: 100%;
@@ -338,7 +345,15 @@
     <span>Space play · ←/→ step one frame · Shift+←/→ ±1 s · Home/End first/last · L loop · F fullscreen</span>
   </footer>
 
-  <script src="js/mp4box.all.min.js"></script>
+  <script>
+    // mp4box v2 is an ES module; classic scripts await this bridge.
+    window.mp4boxReady = new Promise((r) => { window.__mp4boxResolve = r; });
+  </script>
+  <script type="module">
+    import * as MP4Box from './js/mp4box/mp4box.all.mjs';
+    window.MP4Box = MP4Box;
+    window.__mp4boxResolve();
+  </script>
   <script src="js/demuxer.js"></script>
   <script src="js/syncclient.js"></script>
   <script src="js/audio.js"></script>

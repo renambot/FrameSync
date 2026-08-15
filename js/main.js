@@ -171,7 +171,7 @@
       const keyframes = demuxed.video.samples.filter((s) => s.isKey).length;
       const audioLabel = hasAudio
         ? `${i.audio.codec} ${(i.audio.sampleRate / 1000).toFixed(1)} kHz ${i.audio.channels} ch`
-        : (demuxed.audio ? 'audio track unsupported' : 'no audio');
+        : (i.audio ? `${i.audio.codec} audio unsupported` : 'no audio');
       infoEl.textContent =
         `${name} · ${i.codec} · ${i.width}×${i.height} · ` +
         `${i.nominalFps.toFixed(3)} fps · ${i.sampleCount} frames · ` +
