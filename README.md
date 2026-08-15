@@ -184,6 +184,31 @@ chrome --app="http://SERVER:8417/?role=follower&tile=1,0,4,2&fullscreen" \
   --unsafely-treat-insecure-origin-as-secure=http://SERVER:8417
 ```
 
+### Example: a wide movie across 2 monitors
+
+One machine, two side-by-side monitors — a 2×1 grid. Simplest setup: the
+master is also the left tile (its keyboard transport keeps working in
+fullscreen, and audio plays from it):
+
+```
+http://localhost:8417/?role=master&src=test/bbb.mp4&tile=0,0,2,1&fullscreen&screen=0
+http://localhost:8417/?role=follower&tile=1,0,2,1&fullscreen&screen=1
+```
+
+Open each URL in its own Chrome **window** (hidden tabs freeze); the first
+click in each satisfies the fullscreen gesture and, once, the display
+permission. To keep the timecode console visible instead, run a third
+windowed page as `?role=master&src=…` and make both tiles followers.
+
+Aspect note: two 16:9 monitors form a 32:9 surface, and fullscreen tiles
+fill their monitor edge-to-edge — so the display is distortion-free when
+the movie's aspect matches the wall's. For other content, pad it to the
+wall aspect once, offline:
+
+```sh
+ffmpeg -i movie.mp4 -vf "pad=ih*32/9:ih:(ow-iw)/2:0" -c:a copy movie-32x9.mp4
+```
+
 ## Verify it yourself
 
 `test/frames-30fps.mp4` is a 300-frame, 30 fps H.264 clip (GOP 60, B-frames)
