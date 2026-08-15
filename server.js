@@ -34,6 +34,58 @@ let lastState = null;
 let nextClientId = 1;
 const clients = new Map(); // socket -> {id, role, report, socket}
 
+// Master arbitration: exactly one client owns the timeline. Ownership is
+// granted on hello(role=master) — last claim wins, the previous owner is
+// demoted. Anchors are accepted only from the owner (by connection identity,
+// or by token so a reconnecting owner's in-flight anchors are still
+// attributable); anything else gets a 'demoted' reply instead of silently
+// fighting over the state.
+let masterClient = null;
+let masterToken = null;
+let lastAnchorUs = 0;
+const MASTER_TIMEOUT_US = 3e6;
+
+function grantMaster(client) {
+  if (masterClient && masterClient !== client && clients.has(masterClient.socket)) {
+    sendJson(masterClient.socket, { type: 'demoted' });
+  }
+  masterClient = client;
+  masterToken = crypto.randomBytes(8).toString('hex');
+  lastAnchorUs = nowUs();
+  sendJson(client.socket, { type: 'master-granted', token: masterToken });
+}
+
+/**
+ * The master is gone (socket closed, or silent past the heartbeat timeout).
+ * Freeze the timeline: extrapolate the mapping to "now", pause it there, and
+ * tell everyone. Followers pause in unison on the frame the master would be
+ * showing, and late joiners inherit a sane paused state instead of
+ * extrapolating a ghost anchor forever.
+ */
+function masterLost() {
+  masterClient = null;
+  masterToken = null;
+  if (lastState && lastState.playing) {
+    const t = nowUs();
+    lastState = {
+      ...lastState,
+      mediaTimeUs: Math.round(
+        lastState.mediaTimeUs + (t - lastState.atSharedUs) * lastState.rate),
+      atSharedUs: t,
+      rate: 0,
+      playing: false,
+    };
+  }
+  for (const [sock] of clients) {
+    if (lastState) sendJson(sock, { type: 'state', ...lastState });
+    sendJson(sock, { type: 'master-lost' });
+  }
+}
+
+setInterval(() => {
+  if (masterClient && nowUs() - lastAnchorUs > MASTER_TIMEOUT_US) masterLost();
+}, 1000).unref();
+
 // ---------- HTTP: static files + /status ----------
 
 const server = http.createServer((req, res) => {
@@ -56,7 +108,12 @@ const server = http.createServer((req, res) => {
       };
     });
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ serverUs: nowUs(), state: lastState, clients: list }, null, 2));
+    res.end(JSON.stringify({
+      serverUs: nowUs(),
+      masterId: masterClient ? masterClient.id : null,
+      state: lastState,
+      clients: list,
+    }, null, 2));
     return;
   }
 
@@ -106,7 +163,10 @@ server.on('upgrade', (req, socket) => {
       handleMessage(client, msg);
     }
   });
-  const drop = () => clients.delete(socket);
+  const drop = () => {
+    clients.delete(socket);
+    if (client === masterClient) masterLost();
+  };
   socket.on('close', drop);
   socket.on('error', drop);
 });
@@ -116,14 +176,23 @@ function handleMessage(client, msg) {
     case 'hello':
       client.role = msg.role || '?';
       sendJson(client.socket, { type: 'welcome', id: client.id, serverUs: nowUs() });
+      if (msg.role === 'master') grantMaster(client);
       if (lastState) sendJson(client.socket, { type: 'state', ...lastState });
+      if (!masterClient && client.role === 'follower') {
+        sendJson(client.socket, { type: 'master-lost' });
+      }
       break;
     case 'ping':
       sendJson(client.socket, { type: 'pong', t0: msg.t0, serverUs: nowUs() });
       break;
     case 'state': {
-      const { type, ...state } = msg;
+      if (client !== masterClient && (!masterToken || msg.token !== masterToken)) {
+        sendJson(client.socket, { type: 'demoted' });
+        break;
+      }
+      const { type, token, ...state } = msg;
       lastState = state;
+      lastAnchorUs = nowUs();
       for (const [sock, c] of clients) {
         if (c !== client) sendJson(sock, { type: 'state', ...state });
       }

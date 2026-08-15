@@ -16,9 +16,10 @@
  * still lands every client on the same frame.
  */
 class SyncClient {
-  constructor(role, { onState, onStatus } = {}) {
+  constructor(role, { onState, onStatus, onDemoted, onMasterLost } = {}) {
     this.role = role;
-    this.cb = { onState, onStatus };
+    this.cb = { onState, onStatus, onDemoted, onMasterLost };
+    this.masterToken = null;
     this.ws = null;
     this.samples = [];   // recent {rtt, offset} pairs, µs
     this.connected = false;
@@ -61,6 +62,13 @@ class SyncClient {
         this._status();
       } else if (msg.type === 'state') {
         this.cb.onState?.(msg);
+      } else if (msg.type === 'master-granted') {
+        this.masterToken = msg.token;
+      } else if (msg.type === 'demoted') {
+        this.masterToken = null;
+        this.cb.onDemoted?.();
+      } else if (msg.type === 'master-lost') {
+        this.cb.onMasterLost?.();
       }
     };
   }
@@ -81,8 +89,10 @@ class SyncClient {
   /** The server's clock, estimated locally. The one timeline everyone shares. */
   sharedNowUs() { return performance.now() * 1000 + this.offsetUs; }
 
-  /** Master: broadcast a new playback anchor. */
-  sendState(state) { this._send({ type: 'state', seq: ++this.seq, ...state }); }
+  /** Master: broadcast a new playback anchor (carries the ownership token). */
+  sendState(state) {
+    this._send({ type: 'state', seq: ++this.seq, token: this.masterToken, ...state });
+  }
 
   /** Follower: register a function producing the once-a-second sync report. */
   setReporter(fn) { this.reportFn = fn; }

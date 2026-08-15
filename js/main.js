@@ -45,6 +45,7 @@
   let loadingSrc = false;
   let broadcastTimer = null;
   let lastBroadcast = 0;
+  let masterLost = false;
 
   // ---- capability gate -----------------------------------------------
 
@@ -200,8 +201,21 @@
 
     if (role !== 'solo') {
       sync = new SyncClient(role, {
-        onState: (s) => { if (role === 'follower') applyState(s); },
+        onState: (s) => {
+          masterLost = false;
+          if (role === 'follower') applyState(s);
+        },
         onStatus: renderSyncStatus,
+        onDemoted: () => {
+          if (role === 'master') {
+            setRole('follower');
+            showError('Another client claimed master — this page is now a follower.');
+          }
+        },
+        onMasterLost: () => {
+          masterLost = true;
+          renderSyncStatus(sync);
+        },
       });
       sync.connect();
       sync.setReporter(() => ({
@@ -265,7 +279,8 @@
     if (role === 'solo') { syncStatusEl.textContent = ''; return; }
     if (!s || !s.connected) { syncStatusEl.textContent = `○ ${role} · connecting…`; return; }
     const rtt = s.rttMs === null ? '—' : s.rttMs.toFixed(1);
-    syncStatusEl.textContent = `● ${role} · rtt ${rtt} ms`;
+    syncStatusEl.textContent = `● ${role} · rtt ${rtt} ms` +
+      (masterLost && role === 'follower' ? ' · MASTER LOST' : '');
   }
 
   function setControlsEnabled(on) {

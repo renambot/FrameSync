@@ -110,6 +110,15 @@ How it works — the transport (a WebSocket) matters less than the design:
 - `GET /status` reports each client's displayed frame and its deviation from
   the master mapping, measured in the shared clock domain — transport
   latency does not pollute the measurement.
+- **Master liveness & arbitration.** Master ownership is granted by the
+  server (last claim wins, token-stamped). If the master disconnects — or
+  goes silent past 3 s, e.g. a hung machine — the server freezes the
+  timeline: it extrapolates the mapping to "now", broadcasts it as a paused
+  state, and notifies everyone (followers show `MASTER LOST`; late joiners
+  inherit the frozen frame instead of a runaway ghost timeline). Opening a
+  new `?role=master` takes over instantly; the previous master is demoted
+  (its page flips to follower) and its stale anchors are rejected, so two
+  masters can never fight over the timeline.
 
 Measured on localhost with the beep test clip: a visible follower tracks
 within one frame period (≲33 ms); on pause every client converges to the

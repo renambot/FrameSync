@@ -3,3 +3,7 @@
 # large local media in the project root (test/ clips are tracked)
 /*.mp4
 /*.mov
+# local media dropped into test/ — only the generated ground-truth clips are tracked
+test/*
+!test/frames-30fps.mp4
+!test/frames-30fps-audio.mp4
