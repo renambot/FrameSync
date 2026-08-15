@@ -411,9 +411,59 @@
 
   // Fullscreen shows the stage only (pure video, no console) — works in any
   // role, including followers, whose transport is otherwise locked.
+  // With the Window Management API (Chromium, secure context) it can target
+  // a specific display: pick one in the selector or pass ?screen=N.
+  const screenSel = $('screen-sel');
+  let desiredScreen = null; // null = whatever screen the window is on
+  let screenDetails = null;
+  const hasWindowMgmt = 'getScreenDetails' in window;
+  if (!hasWindowMgmt) screenSel.hidden = true;
+
+  async function ensureScreens() {
+    if (!hasWindowMgmt) return null;
+    if (!screenDetails) {
+      try { screenDetails = await window.getScreenDetails(); } catch (e) { return null; }
+      screenDetails.addEventListener('screenschange', populateScreenSel);
+      populateScreenSel();
+    }
+    return screenDetails;
+  }
+
+  function populateScreenSel() {
+    if (!screenDetails) return;
+    const prev = screenSel.value;
+    screenSel.innerHTML = '';
+    screenSel.append(new Option('current screen', 'auto'));
+    screenDetails.screens.forEach((s, i) => {
+      const label = `${i}: ${s.label || s.width + '×' + s.height}${s.isPrimary ? ' ★' : ''}`;
+      screenSel.append(new Option(label, String(i)));
+    });
+    if ([...screenSel.options].some((o) => o.value === prev)) screenSel.value = prev;
+    else if (desiredScreen !== null && screenDetails.screens[desiredScreen]) {
+      screenSel.value = String(desiredScreen);
+    }
+  }
+
+  // Enumerating displays prompts for permission, so do it lazily inside a
+  // real gesture: the first time the selector is opened.
+  screenSel.addEventListener('pointerdown', () => { ensureScreens(); });
+  screenSel.addEventListener('change', () => {
+    desiredScreen = screenSel.value === 'auto' ? null : Number(screenSel.value);
+    if (document.fullscreenElement) enterFullscreen(); // move it live
+  });
+
+  async function enterFullscreen() {
+    let opts;
+    if (desiredScreen !== null) {
+      const d = await ensureScreens();
+      if (d && d.screens[desiredScreen]) opts = { screen: d.screens[desiredScreen] };
+    }
+    try { await stage.requestFullscreen(opts); } catch (e) { /* no gesture yet */ }
+  }
+
   function toggleFullscreen() {
     if (document.fullscreenElement) document.exitFullscreen();
-    else stage.requestFullscreen().catch(() => {});
+    else enterFullscreen();
   }
   btnFs.addEventListener('click', toggleFullscreen);
   window.addEventListener('keydown', (e) => {
@@ -462,16 +512,24 @@
   const paramSrc = params.get('src');
   if (paramSrc) loadFromUrl(paramSrc).catch((e) => showError(String(e.message || e)));
 
+  // ?screen=N: display index used for fullscreen (Window Management API).
+  const paramScreen = params.get('screen');
+  if (paramScreen !== null && hasWindowMgmt) {
+    desiredScreen = Number(paramScreen);
+    screenSel.value = ''; // reflected once displays are enumerated
+  }
+
   // ?fullscreen (or ?fs): browsers only grant fullscreen from a user
   // gesture, so try right away and otherwise arm a one-shot: the first
-  // click or keypress anywhere takes the stage fullscreen.
+  // click or keypress anywhere takes the stage fullscreen (on the
+  // ?screen=N display when set — the first use may need a second gesture
+  // if the display-permission prompt consumes the first one).
   if (params.has('fullscreen') || params.has('fs')) {
-    stage.requestFullscreen().catch(() => {
-      const once = () => {
-        if (!document.fullscreenElement) stage.requestFullscreen().catch(() => {});
-      };
-      window.addEventListener('pointerdown', once, { once: true });
-      window.addEventListener('keydown', once, { once: true });
-    });
+    enterFullscreen();
+    const once = () => {
+      if (!document.fullscreenElement) enterFullscreen();
+    };
+    window.addEventListener('pointerdown', once, { once: true });
+    window.addEventListener('keydown', once, { once: true });
   }
 })();

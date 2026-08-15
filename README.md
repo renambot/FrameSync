@@ -89,8 +89,11 @@ http://SERVER:8417/?role=follower&fullscreen
 ```
 
 URL params: `role` (master/follower), `src` (server-relative file to load),
-`loop` — loop playback at end of file, and `fullscreen` (or `fs`) — takes
-the stage fullscreen (video only, cursor hidden). Browsers require a user gesture for fullscreen, so if the immediate
+`loop` — loop playback at end of file, `fullscreen` (or `fs`) — takes the
+stage fullscreen (video only, cursor hidden), and `screen=N` — the display
+index fullscreen should target (Window Management API: Chromium, secure
+context, one-time permission; the selector next to ⛶ lists displays and can
+move a live fullscreen between them). Browsers require a user gesture for fullscreen, so if the immediate
 request is refused, the first click or keypress on the page triggers it; the
 ⛶ button and the F key toggle it any time. For unattended wall nodes, launch
 the browser with `--start-fullscreen` or `--kiosk` instead.
@@ -132,6 +135,12 @@ How it works — the transport (a WebSocket) matters less than the design:
 Measured on localhost with the beep test clip: a visible follower tracks
 within one frame period (≲33 ms); on pause every client converges to the
 identical frame (error 0.0 ms).
+
+**Secure context caveat**: WebCodecs (and the Window Management API) only
+exist in secure contexts. `http://localhost` qualifies, but other machines
+hitting `http://SERVER:8417` do not — for a real multi-machine wall, serve
+HTTPS (e.g. mkcert) or launch Chrome on each node with
+`--unsafely-treat-insecure-origin-as-secure=http://SERVER:8417`.
 
 **Browser throttling caveat**: Chrome suspends rendering (and eventually
 freezes JS entirely) in hidden/occluded pages. A hidden follower degrades to
