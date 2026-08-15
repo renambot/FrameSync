@@ -2,7 +2,7 @@
 'use strict';
 
 /**
- * videoSync server — static files + /sync WebSocket + /status. Zero deps.
+ * FrameSync server — static files + /sync WebSocket + /status. Zero deps.
  *
  * The server is the timebase: nowUs() is a monotonic microsecond clock that
  * every client estimates NTP-style. Playback state is a tiny declarative
@@ -252,5 +252,5 @@ function sendFrame(socket, payload, opcode = 1) {
 const sendJson = (socket, obj) => sendFrame(socket, Buffer.from(JSON.stringify(obj)), 1);
 
 server.listen(PORT, () => {
-  console.log(`videoSync server on http://localhost:${PORT} — sync status at /status`);
+  console.log(`FrameSync server on http://localhost:${PORT} — sync status at /status`);
 });

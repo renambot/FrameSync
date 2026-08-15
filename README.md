@@ -1,4 +1,4 @@
-# videoSync — frame-exact WebCodecs player
+# FrameSync — frame-exact WebCodecs player
 
 A web page that plays MP4 video (with audio) with **frame-exact** seeking,
 stepping, and timing readout — and synchronizes any number of clients to a
