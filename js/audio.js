@@ -77,6 +77,11 @@ class AudioEngine {
     if (!this.available) return false;
     this.stop();
     this._ensureCtx();
+    // A context created without a user gesture stays suspended and its
+    // currentTime does not advance — it must not master the clock. Decline;
+    // the caller paces on the wall clock and audio joins on the next
+    // gesture-driven play once the context is running.
+    if (this.ctx.state !== 'running') return false;
 
     let i = this.samples.findIndex((s) => s.ts + s.duration > mediaTimeUs);
     if (i < 0) return false; // playhead is past the end of the audio track

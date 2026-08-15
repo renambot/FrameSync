@@ -45,6 +45,7 @@ class FramePlayer {
     this.flushing = false;
 
     this.playing = false;
+    this.loop = false;
     this.rate = 1;
     this.baseTs = 0;
     this.baseWall = 0;
@@ -308,6 +309,13 @@ class FramePlayer {
       if (this.ended) {
         if (this.externalClock) {
           // Hold the last frame; the master decides what happens next.
+          this.raf = requestAnimationFrame(() => this._tick());
+          return;
+        }
+        if (this.loop) {
+          // Wrap around: a playing seek to frame 0 rebases the clock and
+          // restarts audio there; `seeking` keeps the loop alive meanwhile.
+          this.seekToFrame(0);
           this.raf = requestAnimationFrame(() => this._tick());
           return;
         }

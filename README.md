@@ -83,8 +83,15 @@ each a role (header dropdown, or URL params):
 
 ```
 http://SERVER:8417/?role=master&src=test/frames-30fps-audio.mp4
-http://SERVER:8417/?role=follower
+http://SERVER:8417/?role=follower&fullscreen
 ```
+
+URL params: `role` (master/follower), `src` (server-relative file to load),
+`loop` — loop playback at end of file, and `fullscreen` (or `fs`) — takes
+the stage fullscreen (video only, cursor hidden). Browsers require a user gesture for fullscreen, so if the immediate
+request is refused, the first click or keypress on the page triggers it; the
+⛶ button and the F key toggle it any time. For unattended wall nodes, launch
+the browser with `--start-fullscreen` or `--kiosk` instead.
 
 Followers auto-load whatever file the master announces (when it was loaded
 by URL — `?src=` or a synced path), lock their transport controls, and slave
@@ -158,6 +165,8 @@ box=1:boxcolor=black@0.7:boxborderw=20" \
 | Home / End | first / last frame |
 | scrubber | frame-accurate scrub (1 frame per step) |
 | Go to frame + Enter | jump to an exact frame index |
+| 🔁 / L | loop at end of file |
+| ⛶ / F | fullscreen (stage only) |
 
 ## Files
 

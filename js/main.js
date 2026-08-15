@@ -24,6 +24,9 @@
   const frameGoto = $('frame-goto');
   const btnMute = $('btn-mute');
   const volSlider = $('volume');
+  const btnFs = $('btn-fs');
+  const btnLoop = $('btn-loop');
+  let loopOn = false;
 
   const slider = $('scrubber');
   const gopCanvas = $('gop-strip');
@@ -46,6 +49,8 @@
   let broadcastTimer = null;
   let lastBroadcast = 0;
   let masterLost = false;
+  let adopting = false; // master is joining an existing timeline; hold anchors
+  let masterSince = 0;  // when this page became master (for the first-anchor grace)
 
   // ---- capability gate -----------------------------------------------
 
@@ -75,7 +80,7 @@
   function onFrame(index, tsMicros) {
     tcEl.textContent = timecode(index, fpsInt);
     frameNowEl.textContent = String(index).padStart(String(meta.info.sampleCount - 1).length, '0');
-    mediaTimeEl.textContent = (tsMicros / 1e6).toFixed(6) + ' s';
+    mediaTimeEl.textContent = (tsMicros / 1e6).toFixed(3) + ' s';
     if (document.activeElement !== slider) slider.value = index;
     drawGopStrip(index);
     if (!player.playing) broadcastNow(); // paused seeks/steps propagate promptly
@@ -127,9 +132,14 @@
   }
 
   async function loadFromUrl(src) {
-    const resp = await fetch(src);
-    if (!resp.ok) throw new Error(`Could not fetch ${src} (${resp.status})`);
-    return loadBuffer(await resp.arrayBuffer(), src.split('/').pop(), src);
+    loadingSrc = true; // one URL load at a time, whoever initiates it
+    try {
+      const resp = await fetch(src);
+      if (!resp.ok) throw new Error(`Could not fetch ${src} (${resp.status})`);
+      return await loadBuffer(await resp.arrayBuffer(), src.split('/').pop(), src);
+    } finally {
+      loadingSrc = false;
+    }
   }
 
   async function loadBuffer(buffer, name, src) {
@@ -177,10 +187,14 @@
       btnMute.disabled = !hasAudio;
       volSlider.disabled = !hasAudio;
       btnMute.textContent = hasAudio && audioEngine.muted ? '🔇' : '🔊';
+      player.loop = loopOn;
       loadedSrc = src;
       updateRoleUI();
       if (role === 'follower' && lastMasterState) applyState(lastMasterState);
-      if (role === 'master') broadcastNow(true);
+      if (role === 'master') {
+        if (lastMasterState && sync && sync.seq === 0) adoptState(lastMasterState);
+        else broadcastNow(true);
+      }
     } catch (err) {
       dropHint.hidden = false;
       dropHint.textContent = 'Drop an MP4 here, or choose a file.';
@@ -204,6 +218,10 @@
         onState: (s) => {
           masterLost = false;
           if (role === 'follower') applyState(s);
+          // A master that has not yet anchored anything adopts the ongoing
+          // timeline instead of resetting it (the server sends the stored
+          // state right after the grant).
+          else if (role === 'master' && sync && sync.seq === 0) adoptState(s);
         },
         onStatus: renderSyncStatus,
         onDemoted: () => {
@@ -224,6 +242,7 @@
         sharedUs: sync.sharedNowUs(),
       }));
       if (role === 'master') {
+        masterSince = performance.now();
         // Periodic re-anchor: keeps followers locked to the master's actual
         // clock (audio hardware) even as it drifts from the wall clock.
         broadcastTimer = setInterval(() => broadcastNow(true), 500);
@@ -233,11 +252,59 @@
     renderSyncStatus(sync);
   }
 
+  /**
+   * A (re)joining master resumes the wall's current position instead of
+   * resetting it: seek to where the mapping says the timeline is now, keep
+   * playing if it was playing, and only then start anchoring from here.
+   */
+  async function adoptState(s) {
+    lastMasterState = s;
+    if (s.src && s.src !== loadedSrc) {
+      // Not loaded yet. If a load is already in flight (e.g. the ?src param
+      // fetch), do NOT start a second one — loadBuffer re-runs adoption when
+      // it finishes.
+      if (!loadingSrc) loadFromUrl(s.src).catch((err) => showError(String(err.message || err)));
+      return;
+    }
+    if (!player || !player.frameCount || adopting) return;
+    adopting = true;
+    try {
+      const playing = s.playing && s.rate > 0;
+      const nowUs = playing
+        ? s.mediaTimeUs + (sync.sharedNowUs() - s.atSharedUs) * s.rate
+        : s.mediaTimeUs;
+      await player.seekToFrame(player._indexForTime(nowUs));
+      if (playing) {
+        player.setRate(s.rate);
+        rateSel.value = String(s.rate);
+        player.play();
+      }
+    } finally {
+      adopting = false;
+    }
+    // Adoption complete — this is deliberately the master's first anchor,
+    // bypassing the not-yet-adopted gate below.
+    if (sync && sync.connected && player && player.frameCount) sendAnchor();
+  }
+
   function broadcastNow(force = false) {
+    if (adopting) return;
     if (role !== 'master' || !sync || !sync.connected || !player || !player.frameCount) return;
+    if (sync.seq === 0) {
+      // No anchor sent yet. If a stored state has arrived, adoption owns the
+      // first anchor — never stamp our own frame over the running timeline.
+      if (lastMasterState) return;
+      // Otherwise grace-wait so the server's stored state (if any) can
+      // arrive; a genuinely fresh server has none and we anchor after it.
+      if (performance.now() - masterSince < 1500) return;
+    }
     const now = performance.now();
     if (!force && now - lastBroadcast < 100) return;
-    lastBroadcast = now;
+    sendAnchor();
+  }
+
+  function sendAnchor() {
+    lastBroadcast = performance.now();
     sync.sendState({
       mediaTimeUs: Math.round(player.clockNowUs()),
       atSharedUs: Math.round(sync.sharedNowUs()),
@@ -249,11 +316,8 @@
 
   async function applyState(s) {
     lastMasterState = s;
-    if (s.src && s.src !== loadedSrc && !loadingSrc) {
-      loadingSrc = true;
-      try { await loadFromUrl(s.src); }
-      catch (err) { showError(String(err.message || err)); }
-      finally { loadingSrc = false; }
+    if (s.src && s.src !== loadedSrc) {
+      if (!loadingSrc) loadFromUrl(s.src).catch((err) => showError(String(err.message || err)));
       return; // loadBuffer re-applies lastMasterState once loaded
     }
     if (!player || !player.frameCount || !sync) return;
@@ -270,7 +334,7 @@
   function updateRoleUI() {
     const follower = role === 'follower';
     const haveVideo = Boolean(player && player.frameCount);
-    for (const el of [btnPlay, btnBack, btnFwd, btnJumpBack, btnJumpFwd, slider, rateSel, frameGoto]) {
+    for (const el of [btnPlay, btnBack, btnFwd, btnJumpBack, btnJumpFwd, slider, rateSel, frameGoto, btnLoop]) {
       el.disabled = follower || !haveVideo;
     }
   }
@@ -284,7 +348,7 @@
   }
 
   function setControlsEnabled(on) {
-    for (const el of [btnPlay, btnBack, btnFwd, btnJumpBack, btnJumpFwd, slider, rateSel, frameGoto]) {
+    for (const el of [btnPlay, btnBack, btnFwd, btnJumpBack, btnJumpFwd, slider, rateSel, frameGoto, btnLoop]) {
       el.disabled = !on;
     }
   }
@@ -305,6 +369,14 @@
   btnJumpFwd.addEventListener('click', () => jumpSeconds(1));
   rateSel.addEventListener('change', () => player?.setRate(Number(rateSel.value)));
 
+  function setLoop(on) {
+    loopOn = on;
+    if (player) player.loop = on;
+    btnLoop.classList.toggle('active', on);
+    btnLoop.setAttribute('aria-pressed', String(on));
+  }
+  btnLoop.addEventListener('click', () => setLoop(!loopOn));
+
   btnMute.addEventListener('click', () => {
     if (!audioEngine) return;
     audioEngine.setMuted(!audioEngine.muted);
@@ -314,24 +386,40 @@
     if (audioEngine) audioEngine.setVolume(Number(volSlider.value) / 100);
   });
 
+  // Jumps and scrubs preserve the play state — a playing video keeps playing
+  // from the new position. Only single-frame stepping (◀︎/▶︎, arrows) pauses.
   function jumpSeconds(sec) {
     if (!player) return;
-    player.pause();
     player.seekRelative(Math.round(sec * fpsInt));
   }
 
   slider.addEventListener('input', () => {
     if (!player) return;
-    player.pause();
     player.seekToFrame(Number(slider.value));
   });
+  // Release focus after a mouse/touch scrub so the play loop resumes moving
+  // the thumb (it leaves a focused slider alone while the user is on it).
+  slider.addEventListener('pointerup', () => slider.blur());
 
   frameGoto.addEventListener('focus', () => frameGoto.select());
   frameGoto.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && player && frameGoto.value !== '') {
-      player.pause();
       player.seekToFrame(Number(frameGoto.value));
       frameGoto.blur();
+    }
+  });
+
+  // Fullscreen shows the stage only (pure video, no console) — works in any
+  // role, including followers, whose transport is otherwise locked.
+  function toggleFullscreen() {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else stage.requestFullscreen().catch(() => {});
+  }
+  btnFs.addEventListener('click', toggleFullscreen);
+  window.addEventListener('keydown', (e) => {
+    if ((e.key === 'f' || e.key === 'F') && e.target !== frameGoto && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault();
+      toggleFullscreen();
     }
   });
 
@@ -344,8 +432,9 @@
       case ' ': e.preventDefault(); player.toggle(); break;
       case 'ArrowLeft': e.preventDefault(); e.shiftKey ? jumpSeconds(-1) : player.stepBack(); break;
       case 'ArrowRight': e.preventDefault(); e.shiftKey ? jumpSeconds(1) : player.stepForward(); break;
-      case 'Home': e.preventDefault(); player.pause(); player.seekToFrame(0); break;
-      case 'End': e.preventDefault(); player.pause(); player.seekToFrame(player.frameCount - 1); break;
+      case 'Home': e.preventDefault(); player.seekToFrame(0); break;
+      case 'End': e.preventDefault(); player.seekToFrame(player.frameCount - 1); break;
+      case 'l': case 'L': e.preventDefault(); setLoop(!loopOn); break;
     }
   });
 
@@ -369,6 +458,20 @@
   const params = new URLSearchParams(location.search);
   const paramRole = params.get('role');
   if (paramRole === 'master' || paramRole === 'follower') setRole(paramRole);
+  if (params.has('loop')) setLoop(true);
   const paramSrc = params.get('src');
   if (paramSrc) loadFromUrl(paramSrc).catch((e) => showError(String(e.message || e)));
+
+  // ?fullscreen (or ?fs): browsers only grant fullscreen from a user
+  // gesture, so try right away and otherwise arm a one-shot: the first
+  // click or keypress anywhere takes the stage fullscreen.
+  if (params.has('fullscreen') || params.has('fs')) {
+    stage.requestFullscreen().catch(() => {
+      const once = () => {
+        if (!document.fullscreenElement) stage.requestFullscreen().catch(() => {});
+      };
+      window.addEventListener('pointerdown', once, { once: true });
+      window.addEventListener('keydown', once, { once: true });
+    });
+  }
 })();
