@@ -41,7 +41,9 @@
   let meta = null; // demux result for the loaded file
   let fpsInt = 25;
 
-  let viewport = null;      // normalized crop for tiled walls
+  let viewport = null;      // normalized tile/crop rect for tiled walls
+  let viewportFit = 'fill';
+  let wallGrid = null;
   let viewportLabel = '';
   let sync = null;
   let role = 'solo';
@@ -191,7 +193,7 @@
       volSlider.disabled = !hasAudio;
       btnMute.textContent = hasAudio && audioEngine.muted ? '🔇' : '🔊';
       player.loop = loopOn;
-      if (viewport) player.setViewport(viewport);
+      if (viewport) player.setViewport(viewport, { fit: viewportFit, wallGrid });
       loadedSrc = src;
       updateRoleUI();
       if (role === 'follower' && lastMasterState) applyState(lastMasterState);
@@ -515,11 +517,17 @@
   // Tiled-wall crop: ?tile=col,row,cols,rows (grid slice) or
   // ?crop=x,y,w,h (normalized 0–1 rect; wins over tile — use it for
   // bezel-compensated insets). Decode is full-frame; only the blit crops.
+  // ?fit=contain (default with ?tile) aspect-fits the video into the wall's
+  // combined surface — letterboxed globally, never distorted; ?fit=fill
+  // stretches the slice edge-to-edge (for content pre-matched to the wall).
+  // ?wall=cols,rows supplies wall geometry when using ?crop with contain.
   const paramTile = params.get('tile');
   if (paramTile) {
     const [col, row, cols, rows] = paramTile.split(',').map(Number);
     if (cols >= 1 && rows >= 1 && col >= 0 && col < cols && row >= 0 && row < rows) {
       viewport = { x: col / cols, y: row / rows, w: 1 / cols, h: 1 / rows };
+      wallGrid = { cols, rows };
+      viewportFit = 'contain';
       viewportLabel = `tile ${col},${row} of ${cols}×${rows}`;
     }
   }
@@ -531,6 +539,14 @@
       viewportLabel = `crop ${x},${y} ${w}×${h}`;
     }
   }
+  const paramWall = params.get('wall');
+  if (paramWall) {
+    const [cols, rows] = paramWall.split(',').map(Number);
+    if (cols >= 1 && rows >= 1) wallGrid = { cols, rows };
+  }
+  const paramFit = params.get('fit');
+  if (paramFit === 'contain' || paramFit === 'fill') viewportFit = paramFit;
+  if (viewport && viewportFit === 'contain') viewportLabel += ' · contain';
   if (viewport) stage.classList.add('tiled');
 
   if (params.has('loop')) setLoop(true);

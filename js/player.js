@@ -34,7 +34,11 @@ class FramePlayer {
     this.presOrder = []; // presentation index -> decode index
     this.tsToIndex = new Map(); // µs timestamp -> presentation index
 
-    this.viewport = null; // {x,y,w,h} normalized crop for tiled walls
+    this.viewport = null; // {x,y,w,h} normalized tile/crop rect for walls
+    this.fitMode = 'fill';   // 'fill': viewport crops the source directly;
+                             // 'contain': viewport is a wall-space rect and
+                             // the video is aspect-fitted into the wall
+    this.wallGrid = null;    // {cols, rows} — wall geometry for 'contain'
     this.queue = [];     // decoded VideoFrames awaiting display (pts order)
     this.waiters = [];
     this.currentFrame = null;
@@ -162,10 +166,53 @@ class FramePlayer {
    * Draw a frame honoring the viewport: tiled wall nodes decode the full
    * stream (bitstreams are not spatially separable) but blit only their
    * slice — the crop is free, the GPU samples the sub-rect at composite.
+   *
+   * 'fill' mode: the viewport is a source crop; the slice fills the canvas.
+   *
+   * 'contain' mode: the viewport is this tile's rect on the wall, and the
+   * video is aspect-fitted into the wall's combined surface — one global
+   * letterbox/pillarbox decision, never distortion. Implementation: model a
+   * virtual wall canvas at the resolution where the video renders 1:1,
+   * then draw the whole frame at its wall position translated into tile
+   * coordinates; canvas clipping discards the rest and the cleared
+   * background is the (black) bars. Every node computes the same fit, so
+   * bars align exactly across the wall.
    */
   _draw(frame) {
     const W = frame.displayWidth, H = frame.displayHeight;
     const v = this.viewport;
+
+    if (v && this.fitMode === 'contain') {
+      const grid = this.wallGrid || { cols: 1, rows: 1 };
+      // Monitors are assumed uniform; measure this node's display aspect.
+      const monA = (window.screen && screen.width && screen.height)
+        ? screen.width / screen.height : 16 / 9;
+      const wallA = monA * grid.cols / grid.rows;
+      const vidA = W / H;
+      // Video footprint in wall-normalized space (centered, aspect-fitted).
+      let vr;
+      if (vidA > wallA) {
+        const h = wallA / vidA;
+        vr = { x: 0, y: (1 - h) / 2, w: 1, h };
+      } else {
+        const w = vidA / wallA;
+        vr = { x: (1 - w) / 2, y: 0, w, h: 1 };
+      }
+      // Wall pixel space where the video is native-resolution.
+      const wallPxW = W / vr.w, wallPxH = H / vr.h;
+      const cw = Math.max(1, Math.round(wallPxW * v.w));
+      const ch = Math.max(1, Math.round(wallPxH * v.h));
+      if (this.canvas.width !== cw || this.canvas.height !== ch) {
+        this.canvas.width = cw;
+        this.canvas.height = ch;
+      }
+      this.ctx.fillStyle = '#000';
+      this.ctx.fillRect(0, 0, cw, ch);
+      this.ctx.drawImage(frame, 0, 0, W, H,
+        (vr.x - v.x) * wallPxW, (vr.y - v.y) * wallPxH, W, H);
+      return;
+    }
+
     const sx = v ? v.x * W : 0, sy = v ? v.y * H : 0;
     const sw = v ? v.w * W : W, sh = v ? v.h * H : H;
     const cw = Math.max(1, Math.round(sw)), ch = Math.max(1, Math.round(sh));
@@ -176,9 +223,11 @@ class FramePlayer {
     this.ctx.drawImage(frame, sx, sy, sw, sh, 0, 0, cw, ch);
   }
 
-  /** Set (or clear) the normalized crop; re-renders the held frame. */
-  setViewport(v) {
+  /** Set (or clear) the tile rect and fit mode; re-renders the held frame. */
+  setViewport(v, { fit = 'fill', wallGrid = null } = {}) {
     this.viewport = v;
+    this.fitMode = fit;
+    this.wallGrid = wallGrid;
     if (this.currentFrame) this._draw(this.currentFrame);
   }
 

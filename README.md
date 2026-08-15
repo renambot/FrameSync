@@ -141,8 +141,10 @@ identical frame (error 0.0 ms).
 | `loop` | loop at end of file |
 | `fullscreen` (or `fs`) | stage fullscreen — video only, cursor hidden |
 | `screen=N` | display index fullscreen targets (Window Management API) |
-| `tile=col,row,cols,rows` | show one grid slice of the frame (tiled wall) |
+| `tile=col,row,cols,rows` | show one grid slice of the wall (tiled mode) |
 | `crop=x,y,w,h` | show an arbitrary normalized rect (bezel compensation) |
+| `fit=contain` / `fit=fill` | aspect-fit the video into the wall (default with `tile`) vs stretch the slice |
+| `wall=cols,rows` | wall geometry for `fit=contain` when using `crop` |
 
 ## Wall deployment
 
@@ -157,9 +159,16 @@ http://SERVER:8417/?role=follower&tile=1,0,4,2&fullscreen&screen=0
   the full stream (bitstreams are not spatially separable), then draws its
   slice — no extra decode cost, no interaction with sync. Grid slices from
   `tile` are exact fractions, so adjacent tiles meet seamlessly; use `crop`
-  insets to compensate for monitor bezels. Tiles fill their monitor
-  edge-to-edge in fullscreen (`object-fit: fill`) — match the crop's aspect
-  to the monitor's.
+  insets to compensate for monitor bezels.
+- **Aspect** is preserved by default: with `fit=contain` (implied by
+  `tile`) the video is aspect-fitted into the wall's *combined* surface —
+  one global letterbox/pillarbox decision, computed identically by every
+  node (from its grid position and its monitor's aspect), so the bars align
+  across the wall and the picture is never distorted. `fit=fill` stretches
+  each slice edge-to-edge instead, for content whose aspect already matches
+  the wall. Bare `crop` keeps its source-crop meaning under `fill`; with
+  `fit=contain` it is treated as the tile's wall rect (pass `wall=cols,rows`
+  so the node knows the wall's shape).
 - **Fullscreen** needs a user gesture: if the immediate request on load is
   refused, the first click or keypress triggers it (⛶ / F toggle any time).
   `screen=N` and the display selector next to ⛶ need the one-time
@@ -200,14 +209,11 @@ click in each satisfies the fullscreen gesture and, once, the display
 permission. To keep the timecode console visible instead, run a third
 windowed page as `?role=master&src=…` and make both tiles followers.
 
-Aspect note: two 16:9 monitors form a 32:9 surface, and fullscreen tiles
-fill their monitor edge-to-edge — so the display is distortion-free when
-the movie's aspect matches the wall's. For other content, pad it to the
-wall aspect once, offline:
-
-```sh
-ffmpeg -i movie.mp4 -vf "pad=ih*32/9:ih:(ow-iw)/2:0" -c:a copy movie-32x9.mp4
-```
+Aspect: two 16:9 monitors form a 32:9 surface, and the default
+`fit=contain` aspect-fits the movie into it — a 16:9 movie shows centered
+across both monitors with pillarbox bars on the outer edges, a 2.39:1
+scope movie with narrower bars, true 32:9 content edge-to-edge with none.
+Add `fit=fill` to stretch instead.
 
 ## Verify it yourself
 
