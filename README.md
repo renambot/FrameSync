@@ -1,8 +1,9 @@
 # videoSync — frame-exact WebCodecs player
 
 A web page that plays MP4 video (with audio) with **frame-exact** seeking,
-stepping, and timing readout, built directly on the modern low-level web
-media stack:
+stepping, and timing readout — and synchronizes any number of clients to a
+shared clock, up to tiled video-wall deployments. Built directly on the
+modern low-level web media stack:
 
 - **WebCodecs** (`VideoDecoder`, `AudioDecoder`, `VideoFrame`,
   `EncodedVideoChunk`) — the page owns the decode pipeline instead of
@@ -88,16 +89,6 @@ http://SERVER:8417/?role=master&src=test/frames-30fps-audio.mp4
 http://SERVER:8417/?role=follower&fullscreen
 ```
 
-URL params: `role` (master/follower), `src` (server-relative file to load),
-`loop` — loop playback at end of file, `fullscreen` (or `fs`) — takes the
-stage fullscreen (video only, cursor hidden), and `screen=N` — the display
-index fullscreen should target (Window Management API: Chromium, secure
-context, one-time permission; the selector next to ⛶ lists displays and can
-move a live fullscreen between them). Browsers require a user gesture for fullscreen, so if the immediate
-request is refused, the first click or keypress on the page triggers it; the
-⛶ button and the F key toggle it any time. For unattended wall nodes, launch
-the browser with `--start-fullscreen` or `--kiosk` instead.
-
 Followers auto-load whatever file the master announces (when it was loaded
 by URL — `?src=` or a synced path), lock their transport controls, and slave
 their render clock to the master. Play, pause, seek, step, and rate changes
@@ -131,23 +122,67 @@ How it works — the transport (a WebSocket) matters less than the design:
   new `?role=master` takes over instantly; the previous master is demoted
   (its page flips to follower) and its stale anchors are rejected, so two
   masters can never fight over the timeline.
+- **Master adoption.** A master that (re)joins while a timeline exists does
+  not reset it: it loads the announced file if needed, seeks to the mapped
+  current position, resumes playing if the wall was playing, and only then
+  starts anchoring. Killing and reopening the master page mid-show costs a
+  sub-200 ms nudge, not a restart from zero.
 
 Measured on localhost with the beep test clip: a visible follower tracks
 within one frame period (≲33 ms); on pause every client converges to the
 identical frame (error 0.0 ms).
 
-**Secure context caveat**: WebCodecs (and the Window Management API) only
-exist in secure contexts. `http://localhost` qualifies, but other machines
-hitting `http://SERVER:8417` do not — for a real multi-machine wall, serve
-HTTPS (e.g. mkcert) or launch Chrome on each node with
-`--unsafely-treat-insecure-origin-as-secure=http://SERVER:8417`.
+## URL parameters
 
-**Browser throttling caveat**: Chrome suspends rendering (and eventually
-freezes JS entirely) in hidden/occluded pages. A hidden follower degrades to
-coarse ~1 s tracking via a fallback timer, and resyncs exactly the moment it
-is visible again. For wall/kiosk deployments run pages fullscreen and
-consider launching Chrome with `--disable-backgrounding-occluded-windows`.
-Tabs playing audio (the master) are exempt from freezing.
+| Param | Meaning |
+|---|---|
+| `role=master` / `role=follower` | sync role (default: solo) |
+| `src=test/foo.mp4` | server-relative file to load at startup |
+| `loop` | loop at end of file |
+| `fullscreen` (or `fs`) | stage fullscreen — video only, cursor hidden |
+| `screen=N` | display index fullscreen targets (Window Management API) |
+| `tile=col,row,cols,rows` | show one grid slice of the frame (tiled wall) |
+| `crop=x,y,w,h` | show an arbitrary normalized rect (bezel compensation) |
+
+## Wall deployment
+
+A typical wall node — follower, one grid slice, fullscreen on a chosen
+display:
+
+```
+http://SERVER:8417/?role=follower&tile=1,0,4,2&fullscreen&screen=0
+```
+
+- **Tiling** (`tile`, `crop`) crops at blit time only: every node decodes
+  the full stream (bitstreams are not spatially separable), then draws its
+  slice — no extra decode cost, no interaction with sync. Grid slices from
+  `tile` are exact fractions, so adjacent tiles meet seamlessly; use `crop`
+  insets to compensate for monitor bezels. Tiles fill their monitor
+  edge-to-edge in fullscreen (`object-fit: fill`) — match the crop's aspect
+  to the monitor's.
+- **Fullscreen** needs a user gesture: if the immediate request on load is
+  refused, the first click or keypress triggers it (⛶ / F toggle any time).
+  `screen=N` and the display selector next to ⛶ need the one-time
+  window-management permission (Chromium). Unattended nodes skip all of
+  this by launching the browser with `--start-fullscreen` or `--kiosk`.
+- **Secure context**: WebCodecs (and the Window Management API) only exist
+  in secure contexts. `http://localhost` qualifies; other machines hitting
+  `http://SERVER:8417` do not — serve HTTPS (e.g. mkcert) or launch Chrome
+  on each node with
+  `--unsafely-treat-insecure-origin-as-secure=http://SERVER:8417`.
+- **Throttling**: Chrome suspends rendering (and eventually freezes JS) in
+  hidden/occluded pages. A hidden follower degrades to coarse ~1 s tracking
+  via a fallback timer and resyncs exactly the moment it is visible again.
+  Run wall pages fullscreen and add `--disable-backgrounding-occluded-windows`.
+  Tabs playing audio (the master) are exempt from freezing.
+
+A complete node launch line:
+
+```sh
+chrome --app="http://SERVER:8417/?role=follower&tile=1,0,4,2&fullscreen" \
+  --start-fullscreen --disable-backgrounding-occluded-windows \
+  --unsafely-treat-insecure-origin-as-secure=http://SERVER:8417
+```
 
 ## Verify it yourself
 

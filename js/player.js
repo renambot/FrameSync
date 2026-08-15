@@ -34,6 +34,7 @@ class FramePlayer {
     this.presOrder = []; // presentation index -> decode index
     this.tsToIndex = new Map(); // µs timestamp -> presentation index
 
+    this.viewport = null; // {x,y,w,h} normalized crop for tiled walls
     this.queue = [];     // decoded VideoFrames awaiting display (pts order)
     this.waiters = [];
     this.currentFrame = null;
@@ -157,15 +158,34 @@ class FramePlayer {
     }
   }
 
+  /**
+   * Draw a frame honoring the viewport: tiled wall nodes decode the full
+   * stream (bitstreams are not spatially separable) but blit only their
+   * slice — the crop is free, the GPU samples the sub-rect at composite.
+   */
+  _draw(frame) {
+    const W = frame.displayWidth, H = frame.displayHeight;
+    const v = this.viewport;
+    const sx = v ? v.x * W : 0, sy = v ? v.y * H : 0;
+    const sw = v ? v.w * W : W, sh = v ? v.h * H : H;
+    const cw = Math.max(1, Math.round(sw)), ch = Math.max(1, Math.round(sh));
+    if (this.canvas.width !== cw || this.canvas.height !== ch) {
+      this.canvas.width = cw;
+      this.canvas.height = ch;
+    }
+    this.ctx.drawImage(frame, sx, sy, sw, sh, 0, 0, cw, ch);
+  }
+
+  /** Set (or clear) the normalized crop; re-renders the held frame. */
+  setViewport(v) {
+    this.viewport = v;
+    if (this.currentFrame) this._draw(this.currentFrame);
+  }
+
   _displayFrame(frame) {
     if (this.currentFrame) this.currentFrame.close();
     this.currentFrame = frame;
-    const w = frame.displayWidth, h = frame.displayHeight;
-    if (this.canvas.width !== w || this.canvas.height !== h) {
-      this.canvas.width = w;
-      this.canvas.height = h;
-    }
-    this.ctx.drawImage(frame, 0, 0, w, h);
+    this._draw(frame);
     const idx = this.tsToIndex.get(frame.timestamp);
     if (idx !== undefined) this.currentIndex = idx;
     this.cb.onFrame?.(this.currentIndex, frame.timestamp);
@@ -429,9 +449,7 @@ class FramePlayer {
 
   /** Redraw the held frame (e.g. nothing decodes while paused). */
   redraw() {
-    if (this.currentFrame) {
-      this.ctx.drawImage(this.currentFrame, 0, 0, this.canvas.width, this.canvas.height);
-    }
+    if (this.currentFrame) this._draw(this.currentFrame);
   }
 
   destroy() {

@@ -41,6 +41,8 @@
   let meta = null; // demux result for the loaded file
   let fpsInt = 25;
 
+  let viewport = null;      // normalized crop for tiled walls
+  let viewportLabel = '';
   let sync = null;
   let role = 'solo';
   let loadedSrc = null;      // server-relative URL the file came from, if any
@@ -175,7 +177,8 @@
       infoEl.textContent =
         `${name} · ${i.codec} · ${i.width}×${i.height} · ` +
         `${i.nominalFps.toFixed(3)} fps · ${i.sampleCount} frames · ` +
-        `${keyframes} keyframes · ${i.durationSec.toFixed(3)} s · ${audioLabel}`;
+        `${keyframes} keyframes · ${i.durationSec.toFixed(3)} s · ${audioLabel}` +
+        (viewportLabel ? ` · ${viewportLabel}` : '');
 
       frameTotalEl.textContent = i.sampleCount - 1;
       slider.max = i.sampleCount - 1;
@@ -188,6 +191,7 @@
       volSlider.disabled = !hasAudio;
       btnMute.textContent = hasAudio && audioEngine.muted ? '🔇' : '🔊';
       player.loop = loopOn;
+      if (viewport) player.setViewport(viewport);
       loadedSrc = src;
       updateRoleUI();
       if (role === 'follower' && lastMasterState) applyState(lastMasterState);
@@ -508,6 +512,27 @@
   const params = new URLSearchParams(location.search);
   const paramRole = params.get('role');
   if (paramRole === 'master' || paramRole === 'follower') setRole(paramRole);
+  // Tiled-wall crop: ?tile=col,row,cols,rows (grid slice) or
+  // ?crop=x,y,w,h (normalized 0–1 rect; wins over tile — use it for
+  // bezel-compensated insets). Decode is full-frame; only the blit crops.
+  const paramTile = params.get('tile');
+  if (paramTile) {
+    const [col, row, cols, rows] = paramTile.split(',').map(Number);
+    if (cols >= 1 && rows >= 1 && col >= 0 && col < cols && row >= 0 && row < rows) {
+      viewport = { x: col / cols, y: row / rows, w: 1 / cols, h: 1 / rows };
+      viewportLabel = `tile ${col},${row} of ${cols}×${rows}`;
+    }
+  }
+  const paramCrop = params.get('crop');
+  if (paramCrop) {
+    const [x, y, w, h] = paramCrop.split(',').map(Number);
+    if (w > 0 && h > 0 && x >= 0 && y >= 0 && x + w <= 1 && y + h <= 1) {
+      viewport = { x, y, w, h };
+      viewportLabel = `crop ${x},${y} ${w}×${h}`;
+    }
+  }
+  if (viewport) stage.classList.add('tiled');
+
   if (params.has('loop')) setLoop(true);
   const paramSrc = params.get('src');
   if (paramSrc) loadFromUrl(paramSrc).catch((e) => showError(String(e.message || e)));

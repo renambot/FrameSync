@@ -98,6 +98,9 @@
     height: 100%;
     object-fit: contain;
   }
+  /* Wall tiles fill their monitor edge-to-edge — the crop geometry, not
+     letterboxing, is responsible for aspect (use ?crop for bezel insets). */
+  #stage.tiled:fullscreen #screen { object-fit: fill; }
   #screen {
     max-width: 100%;
     max-height: 100%;
