@@ -29,6 +29,18 @@ any static server works — there is still no build step (the app is classic
 scripts; mp4box v2 loads as a native ES module, so `file://` no longer
 works — serve over HTTP).
 
+### Docker
+
+```sh
+docker build -t framesync .
+docker run -d -p 8417:8417 -v /path/to/your/videos:/app/videos:ro framesync
+```
+
+Mounted media is served read-only and loads as `?src=videos/<file>`; the
+two ground-truth test clips are baked into the image (`?src=test/…`). Or
+`docker compose up` with the included `docker-compose.yml`, which mounts
+`./videos`. A `/status`-based healthcheck is built in.
+
 Drop any MP4/MOV (H.264, HEVC*, VP9, AV1 — whatever the browser's decoder
 supports) onto the stage. Requires Chrome/Edge 94+, Safari 16.4+, or
 Firefox 130+.

@@ -1,0 +1,8 @@
+services:
+  framesync:
+    build: .
+    ports:
+      - "8417:8417"
+    volumes:
+      # your media, served read-only as ?src=videos/<file>
+      - ./videos:/app/videos:ro

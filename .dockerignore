@@ -1,0 +1,10 @@
+.git
+.claude
+.DS_Store
+Dockerfile
+docker-compose.yml
+*.mp4
+*.mov
+test/*
+!test/frames-30fps.mp4
+!test/frames-30fps-audio.mp4
