@@ -233,6 +233,10 @@ Add `fit=fill` to stretch instead.
 
 ## Verify it yourself
 
+<p align="center">
+  <img src="docs/screenshot.jpg" alt="FrameSync playing the ground-truth clip: the burned-in FRAME 124 matches the readout — frame 124/299, timecode 00:00:04:04, media time 4.133 s — above the keyframe strip and transport controls" width="720">
+</p>
+
 `test/frames-30fps.mp4` is a 300-frame, 30 fps H.264 clip (GOP 60, B-frames)
 with the frame number burned into every frame. Load it, scrub anywhere, step
 with ←/→: the burned-in `FRAME n` must always match the FRAME readout.
