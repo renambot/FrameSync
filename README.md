@@ -192,9 +192,24 @@ http://SERVER:8417/?role=follower&tile=1,0,4,2&fullscreen&screen=0
   this by launching the browser with `--start-fullscreen` or `--kiosk`.
 - **Secure context**: WebCodecs (and the Window Management API) only exist
   in secure contexts. `http://localhost` qualifies; other machines hitting
-  `http://SERVER:8417` do not — serve HTTPS (e.g. mkcert) or launch Chrome
-  on each node with
+  `http://SERVER:8417` do not — serve HTTPS (e.g. mkcert), put a
+  TLS-terminating reverse proxy in front, or launch Chrome on each node with
   `--unsafely-treat-insecure-origin-as-secure=http://SERVER:8417`.
+- **Reverse proxy**: the app can live under a path prefix (the sync
+  WebSocket URL is resolved relative to the page). The proxy must strip the
+  prefix and forward WebSocket upgrades — nginx:
+
+  ```nginx
+  location /framesync/ {
+    proxy_pass http://127.0.0.1:8417/;   # trailing slash strips the prefix
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+  }
+  ```
+
+  (Caddy: `handle_path /framesync/* { reverse_proxy 127.0.0.1:8417 }` —
+  WebSockets are forwarded automatically.)
 - **Throttling**: Chrome suspends rendering (and eventually freezes JS) in
   hidden/occluded pages. A hidden follower degrades to coarse ~1 s tracking
   via a fallback timer and resyncs exactly the moment it is visible again.
