@@ -30,12 +30,12 @@ class SyncClient {
   }
 
   connect() {
-    const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
-    // Resolve /sync relative to the page's directory, not the host root,
-    // so the app works behind a reverse proxy under a path prefix
-    // (e.g. https://host/framesync/ → wss://host/framesync/sync).
-    const base = location.pathname.replace(/[^/]*$/, '');
-    this.ws = new WebSocket(proto + location.host + base + 'sync');
+    // Resolve sync against the document base (which honors the <base> tag
+    // index.html plants behind path-prefix proxies), so the endpoint is
+    // right at the root, under a prefix, with or without a trailing slash.
+    const u = new URL('sync', document.baseURI);
+    u.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    this.ws = new WebSocket(u.href);
 
     this.ws.onopen = () => {
       this.connected = true;

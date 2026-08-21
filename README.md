@@ -200,6 +200,7 @@ http://SERVER:8417/?role=follower&tile=1,0,4,2&fullscreen&screen=0
   prefix and forward WebSocket upgrades — nginx:
 
   ```nginx
+  location = /framesync { return 301 /framesync/; }
   location /framesync/ {
     proxy_pass http://127.0.0.1:8417/;   # trailing slash strips the prefix
     proxy_http_version 1.1;
@@ -207,6 +208,9 @@ http://SERVER:8417/?role=follower&tile=1,0,4,2&fullscreen&screen=0
     proxy_set_header Connection "upgrade";
   }
   ```
+
+  No base path is configured in the app: relative URLs plus a runtime
+  `<base>` shim make it self-locating, with or without the trailing slash.
 
   (Caddy: `handle_path /framesync/* { reverse_proxy 127.0.0.1:8417 }` —
   WebSockets are forwarded automatically.)

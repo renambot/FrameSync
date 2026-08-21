@@ -3,6 +3,20 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>
+  // Behind a path-prefix reverse proxy the app may be visited without a
+  // trailing slash (e.g. /framesync) — the browser would then resolve every
+  // relative URL against the parent. Anchor a <base> at the app directory.
+  // Runs before any resource reference; a no-op at / or with a filename URL.
+  (() => {
+    const p = location.pathname;
+    if (!p.endsWith('/') && !/\./.test(p.split('/').pop())) {
+      const b = document.createElement('base');
+      b.href = p + '/';
+      document.head.appendChild(b);
+    }
+  })();
+</script>
 <title>FrameSync — frame-exact player</title>
 <link rel="icon" type="image/png" href="docs/logo.png">
 <style>
