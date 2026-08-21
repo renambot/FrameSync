@@ -1,8 +1,9 @@
 services:
   framesync:
-    build: .
+    image: framesync:latest
+    container_name: framesync
     ports:
-      - "8417:8417"
+      - "127.0.0.1:8417:8417"
     volumes:
       # your media, served read-only as ?src=videos/<file>
       - ./videos:/app/videos:ro
