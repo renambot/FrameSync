@@ -1,5 +1,9 @@
 # FrameSync — frame-exact WebCodecs player
 
+<p align="center">
+  <img src="docs/framesync.png" alt="FrameSync: demuxed frames and audio feed a frame-exact player, synchronized over a shared clock to follower clients and a tiled video wall" width="640">
+</p>
+
 A web page that plays MP4 video (with audio) with **frame-exact** seeking,
 stepping, and timing readout — and synchronizes any number of clients to a
 shared clock, up to tiled video-wall deployments. Built directly on the
