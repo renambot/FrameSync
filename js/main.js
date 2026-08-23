@@ -155,11 +155,19 @@
       meta = demuxed;
       fpsInt = Math.max(1, Math.round(demuxed.info.nominalFps));
 
+      // User settings survive a file change: rate, volume, mute (loop,
+      // tile, role, and screen already persist as module state).
+      const prevMuted = audioEngine ? audioEngine.muted : false;
+      const prevVolume = audioEngine ? audioEngine.volume : Number(volSlider.value) / 100;
+
       if (player) player.destroy();
       if (audioEngine) audioEngine.destroy();
       player = new FramePlayer(canvas, { onFrame, onPlayState, onStats, onError: (e) => showError(String(e.message || e)) });
+      player.setRate(Number(rateSel.value));
 
       audioEngine = new AudioEngine();
+      audioEngine.setVolume(prevVolume);
+      audioEngine.setMuted(prevMuted);
       hasAudio = demuxed.audio
         ? await audioEngine.load(demuxed.audio.config, demuxed.audio.samples)
         : false;
