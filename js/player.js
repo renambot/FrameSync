@@ -23,6 +23,11 @@
  * reasons.
  */
 class FramePlayer {
+  /**
+   * canvas is drawn into directly (2D context); callbacks are the only
+   * outbound channel — { onFrame, onPlayState, onEnded, onError, onStats }.
+   * Nothing decodes until load(), so constructing a player is cheap.
+   */
   constructor(canvas, callbacks = {}) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
@@ -73,11 +78,19 @@ class FramePlayer {
   /** Give the player an AudioEngine; its clock masters playback at 1×. */
   attachAudio(engine) { this.audio = engine; }
 
+  /** Total frames, counted from the container's sample table — not estimated. */
   get frameCount() { return this.presOrder.length; }
+
+  /** True only once the decoder has flushed AND the queue has drained. */
   get ended() {
     return this.endFlushed && this.queue.length === 0;
   }
 
+  /**
+   * Adopt a decoder config and sample table, and land on frame 0. Throws when
+   * the browser cannot decode the codec — the one load failure the caller
+   * must surface, since there is no degraded mode to fall back to.
+   */
   async load(config, samples) {
     this.destroy();
     this.samples = samples;
@@ -99,6 +112,11 @@ class FramePlayer {
     await this.seekToFrame(0);
   }
 
+  /**
+   * The 'dequeue' listener is what makes decoding self-sustaining: every time
+   * the decoder frees capacity it pulls more work, so _fillQueue() never has
+   * to be polled on a timer.
+   */
   _createDecoder() {
     this.decoder = new VideoDecoder({
       output: (frame) => this._onOutput(frame),
@@ -111,6 +129,7 @@ class FramePlayer {
     this.decoder.configure(this.config);
   }
 
+  /** Decoder output: queue it for display, or discard it as seek fodder. */
   _onOutput(frame) {
     // Outputs older than the seek target are decode fodder, not display frames.
     if (frame.timestamp < this.dropBelowTs) {
@@ -122,6 +141,11 @@ class FramePlayer {
     this._emitStats();
   }
 
+  /**
+   * Release everyone waiting in _nextFrame(). Called on new output and on
+   * anything that invalidates the queue (seek, destroy), so a waiter can
+   * never outlive the queue it was waiting on.
+   */
   _wake() {
     const w = this.waiters;
     this.waiters = [];
@@ -237,6 +261,12 @@ class FramePlayer {
     if (this.currentFrame) this._draw(this.currentFrame);
   }
 
+  /**
+   * Take ownership of a frame and put it on screen. The player holds exactly
+   * one displayed frame; the outgoing one is closed here, which is the only
+   * place that happens outside teardown. currentIndex is recovered from the
+   * timestamp map rather than counted, so it stays exact across seeks.
+   */
   _displayFrame(frame) {
     if (this.currentFrame) this.currentFrame.close();
     this.currentFrame = frame;
@@ -269,6 +299,13 @@ class FramePlayer {
     }
   }
 
+  /**
+   * One seek attempt: reset the decoder, re-enter at the sync sample the
+   * target depends on, and decode forward discarding everything below the
+   * target timestamp. The reset is unavoidable — a decoder cannot be asked to
+   * skip backwards — and it is also what makes the result exact rather than
+   * approximate.
+   */
   async _doSeek(index) {
     const decIdx = this.presOrder[index];
     const targetTs = this.samples[decIdx].ts;
@@ -309,6 +346,7 @@ class FramePlayer {
     );
   }
 
+  /** Start playback, restarting from frame 0 if parked at the end. */
   play() {
     if (this.playing || !this.frameCount) return;
     const start = () => {
@@ -326,6 +364,7 @@ class FramePlayer {
     }
   }
 
+  /** Stop the clock and the sound, keeping the displayed frame. */
   pause() {
     if (!this.playing) return;
     this.playing = false;
@@ -337,16 +376,36 @@ class FramePlayer {
 
   toggle() { this.playing ? this.pause() : this.play(); }
 
+  /**
+   * Change playback rate. Rebasing is required, not cosmetic: the wall-clock
+   * mapping multiplies elapsed time by rate, so without a new anchor the
+   * playhead would jump by the whole elapsed span at the new rate. Audio
+   * re-syncs too, and drops out at anything other than 1×.
+   */
   setRate(rate) {
     this.rate = rate;
     if (this.playing) { this._rebase(); this._syncAudio(); }
   }
 
+  /**
+   * Re-anchor the wall-clock mapping to (displayed frame, now). Called
+   * whenever the playhead or the rate moves under the clock, and by _tick on
+   * decoder starvation *while the wall clock is in charge* — rebasing there is
+   * what makes a slow decoder cost latency instead of dropped frames. Under
+   * audio or an external clock it must not be called: those clocks belong to
+   * something else, and moving them would break sync or continuity.
+   */
   _rebase() {
     this.baseTs = this.currentFrame ? this.currentFrame.timestamp : 0;
     this.baseWall = performance.now();
   }
 
+  /**
+   * The playback loop, one pass per animation frame: ask the active clock for
+   * a media time, then advance the display to the newest queued frame at or
+   * before it. Frames passed over are counted as pacing drops — being late is
+   * resolved by skipping ahead, never by letting the clock slip.
+   */
   _tick() {
     if (!this.playing) return;
     if (this.seeking) {
@@ -422,6 +481,11 @@ class FramePlayer {
     return this.seekToFrame(base + delta);
   }
 
+  /**
+   * Advance exactly one frame. Takes the next decoded frame directly, which is
+   * far cheaper than a seek; falls back to a relative seek if a seek already
+   * owns the queue.
+   */
   async stepForward() {
     if (!this.frameCount) return;
     this.pause();
@@ -430,6 +494,10 @@ class FramePlayer {
     if (frame) this._displayFrame(frame);
   }
 
+  /**
+   * Retreat exactly one frame. Always a seek: decoders only run forwards, so
+   * going back one frame means re-entering at the previous sync sample.
+   */
   async stepBack() {
     if (!this.frameCount) return;
     this.pause();
@@ -476,6 +544,7 @@ class FramePlayer {
     }
   }
 
+  /** Release the external clock and stop; the caller decides what plays next. */
   stopExternal() {
     if (!this.externalClock) return;
     this.externalClock = null;
@@ -493,6 +562,7 @@ class FramePlayer {
     return this.baseTs + (performance.now() - this.baseWall) * 1000 * this.rate;
   }
 
+  /** Push queue depths, the pacing-drop count, and which clock is in charge. */
   _emitStats() {
     this.cb.onStats?.({
       decodeQueue: this.decoder ? this.decoder.decodeQueueSize : 0,
@@ -507,6 +577,12 @@ class FramePlayer {
     if (this.currentFrame) this._draw(this.currentFrame);
   }
 
+  /**
+   * Return to the pre-load state. Every VideoFrame must be closed explicitly
+   * or the decoder starves on frames the GC has not collected yet, so this
+   * covers the queue and the displayed frame as well as the decoder itself.
+   * Safe to call repeatedly, and load() calls it first.
+   */
   destroy() {
     this.externalClock = null;
     clearInterval(this._bgTimer);

@@ -16,6 +16,12 @@
  * still lands every client on the same frame.
  */
 class SyncClient {
+  /**
+   * role: 'master' | 'follower'. The callbacks are the only way out of this
+   * class — it owns the socket and the clock, and reports everything else.
+   * onDemoted fires when the server hands mastership elsewhere; onMasterLost
+   * when the master disappears, leaving followers with a stale anchor.
+   */
   constructor(role, { onState, onStatus, onDemoted, onMasterLost } = {}) {
     this.role = role;
     this.cb = { onState, onStatus, onDemoted, onMasterLost };
@@ -29,6 +35,12 @@ class SyncClient {
     this.reportFn = null;
   }
 
+  /**
+   * Open the socket and keep it open: onclose reconnects after 2 s unless
+   * close() asked for it, so a server restart or a flapping link heals
+   * without touching the page. Clock samples survive the reconnect, so a
+   * follower does not fall back to an unsynced clock while it re-dials.
+   */
   connect() {
     // Resolve sync against the document base (which honors the <base> tag
     // index.html plants behind path-prefix proxies), so the endpoint is
@@ -77,13 +89,26 @@ class SyncClient {
     };
   }
 
+  /**
+   * Gate for "the shared clock can be trusted". Three exchanges is the point
+   * where the minimum-RTT pick below has a real choice to make rather than
+   * being whatever single sample arrived first.
+   */
   get clockReady() { return this.samples.length >= 3; }
 
+  /**
+   * The clock estimate: the offset carried by the *minimum-RTT* sample, not
+   * an average. A slow round trip means queueing delay landed asymmetrically
+   * on one leg, which biases that sample's offset; the fastest exchange in
+   * the window is the one least polluted, so averaging would only mix good
+   * estimates with bad ones.
+   */
   get offsetUs() {
     if (!this.samples.length) return 0;
     return this.samples.reduce((a, b) => (b.rtt < a.rtt ? b : a)).offset;
   }
 
+  /** Best round trip in the window, ms — the UI's link-quality reading. */
   get rttMs() {
     return this.samples.length
       ? Math.min(...this.samples.map((s) => s.rtt)) / 1000
@@ -105,6 +130,7 @@ class SyncClient {
   _send(obj) { if (this.ws && this.ws.readyState === 1) this.ws.send(JSON.stringify(obj)); }
   _status() { this.cb.onStatus?.(this); }
 
+  /** Close for good: suppresses the reconnect that onclose would otherwise arm. */
   close() {
     this.closed = true;
     clearInterval(this.pingTimer);

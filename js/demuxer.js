@@ -26,6 +26,9 @@ async function demuxMP4(arrayBuffer) {
     let audioConfig = null;
     let failed = false;
 
+    // First failure wins and later ones are swallowed: MP4Box reports a bad
+    // file through several callbacks, and rejecting a settled promise again
+    // would replace a precise message with a vaguer one.
     const fail = (msg) => {
       if (!failed) {
         failed = true;
@@ -191,6 +194,8 @@ function webCodecsAudioCodec(containerCodec) {
  */
 function pickAudioTrack(tracks) {
   if (!tracks || !tracks.length) return null;
+  // Ranked by how likely WebCodecs is to decode it, not by fidelity: an
+  // undecodable track is worth less than a lossy one that plays.
   const score = (t) => {
     const c = t.codec.toLowerCase();
     if (c.startsWith('mp4a.40')) return 3;              // AAC
@@ -221,6 +226,11 @@ function extractAudioSpecificConfig(file, trackId) {
   return undefined;
 }
 
+/**
+ * Depth-limited hunt for an esds box. QuickTime nests it inside a 'wave'
+ * extension rather than placing it in the sample entry, and the depth cap
+ * keeps a malformed or cyclic box tree from running away.
+ */
 function findEsds(box, depth = 0) {
   if (!box || depth > 3) return null;
   if (box.esds) return box.esds;

@@ -13,6 +13,11 @@
  * applied, gain filters neutral-ish); 0..2 is the UI range.
  */
 class GPUFilter {
+  /**
+   * Inert until init() succeeds: `ready` false means apply() bypasses, so a
+   * construct-then-fail sequence degrades to unfiltered playback rather than
+   * to an error path the player has to handle.
+   */
   constructor() {
     this.ready = false;
     this.mode = 0;
@@ -21,8 +26,16 @@ class GPUFilter {
     this.layout = 0;
   }
 
+  /** Cheap pre-check so the UI can disable itself without building a device. */
   static get supported() { return 'gpu' in navigator; }
 
+  /**
+   * Build the one pipeline every filter shares — a single WGSL module with the
+   * mode switch inside it, so changing filters is a uniform write rather than
+   * a pipeline swap. Returns false instead of throwing on any failure (no
+   * adapter, no device, shader rejected), because "this machine has no usable
+   * WebGPU" is an expected state on a wall of mixed hardware.
+   */
   async init() {
     if (!GPUFilter.supported) return false;
     try {

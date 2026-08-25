@@ -28,6 +28,8 @@ const MIME = {
   '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.m4v': 'video/mp4',
 };
 
+// The timebase every client estimates. hrtime is monotonic, so it cannot be
+// dragged backwards by NTP corrections mid-session the way Date.now() can.
 const nowUs = () => Number(process.hrtime.bigint() / 1000n);
 
 let lastState = null;
@@ -45,6 +47,7 @@ let masterToken = null;
 let lastAnchorUs = 0;
 const MASTER_TIMEOUT_US = 3e6;
 
+/** Hand the timeline to this client, demoting whoever held it (last claim wins). */
 function grantMaster(client) {
   if (masterClient && masterClient !== client && clients.has(masterClient.socket)) {
     sendJson(masterClient.socket, { type: 'demoted' });
@@ -192,6 +195,8 @@ server.on('upgrade', (req, socket) => {
       handleMessage(client, msg);
     }
   });
+  // 'close' and 'error' can both fire for one socket; deleting from the Map
+  // twice is harmless, and masterLost() is idempotent once the client is gone.
   const drop = () => {
     clients.delete(socket);
     if (client === masterClient) masterLost();
@@ -200,6 +205,11 @@ server.on('upgrade', (req, socket) => {
   socket.on('error', drop);
 });
 
+/**
+ * Route one decoded client message. Anchors are the only privileged type —
+ * everything else is either a clock exchange or a follower's own report, so
+ * an unknown or malformed message is ignored rather than closing the socket.
+ */
 function handleMessage(client, msg) {
   switch (msg.type) {
     case 'hello':
@@ -235,6 +245,15 @@ function handleMessage(client, msg) {
 
 // ---------- minimal RFC 6455 framing (small text messages) ----------
 
+/**
+ * Decode one client frame from the head of a buffer. Returns null when the
+ * frame is still incomplete (the caller keeps accumulating), {error} when a
+ * client declares an implausible payload length (capped at 1 MiB — every
+ * message here is a few hundred bytes, so a huge one is either a bug or an
+ * attempt to make us allocate), or {opcode, payload, consumed}. Fragments are
+ * not reassembled: every message this protocol sends fits in one frame, so a
+ * fragmented one is a client bug rather than a case to support.
+ */
 function parseFrame(buf) {
   if (buf.length < 2) return null;
   const opcode = buf[0] & 0x0f;
@@ -262,6 +281,12 @@ function parseFrame(buf) {
   return { opcode, payload, consumed: off + maskLen + len };
 }
 
+/**
+ * Write one unmasked server frame — the three payload-length encodings the
+ * protocol defines, always FIN. Writes are best-effort: a socket that dies
+ * mid-write is handled by its own close/error path, not by throwing here into
+ * a broadcast loop that still has other clients to reach.
+ */
 function sendFrame(socket, payload, opcode = 1) {
   let header;
   if (payload.length < 126) {
@@ -278,6 +303,7 @@ function sendFrame(socket, payload, opcode = 1) {
   try { socket.write(Buffer.concat([header, payload])); } catch (e) { /* dying socket */ }
 }
 
+/** Every message this server sends is JSON in a text frame. */
 const sendJson = (socket, obj) => sendFrame(socket, Buffer.from(JSON.stringify(obj)), 1);
 
 server.listen(PORT, () => {

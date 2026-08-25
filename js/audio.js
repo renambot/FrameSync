@@ -18,6 +18,12 @@
  * one earlier frame is fed as decoder warm-up and trimmed on output.
  */
 class AudioEngine {
+  /**
+   * Nothing is allocated here: the AudioContext is created lazily by
+   * _ensureCtx() because a context built before a user gesture starts
+   * suspended, and a suspended context's currentTime does not advance — it
+   * would be useless as the master clock.
+   */
   constructor() {
     this.ctx = null;
     this.gain = null;
@@ -44,8 +50,16 @@ class AudioEngine {
     this.LOOKAHEAD = 1.5;   // s of audio kept decoded & scheduled ahead
   }
 
+  /** Whether this file actually has playable audio (a decodable track, non-empty). */
   get available() { return this.supported && this.samples.length > 0; }
 
+  /**
+   * Adopt a track's decoder config and sample table. Returns false — never
+   * throws — when the platform cannot decode it, which is a normal outcome
+   * worth tolerating: the player then runs video off the wall clock instead
+   * of promoting audio to master. Logs the config it probed, since a refusal
+   * is usually one wrong field (channel count, missing description).
+   */
   async load(config, samples) {
     this.destroy(false);
     this.supported = false;
@@ -69,6 +83,7 @@ class AudioEngine {
     return true;
   }
 
+  /** Create the context on first use and nudge it out of 'suspended'. */
   _ensureCtx() {
     if (!this.ctx) {
       this.ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -124,12 +139,25 @@ class AudioEngine {
       Math.max(0, this.ctx.currentTime - this.ctxStartTime) * 1e6;
   }
 
+  /**
+   * Give up on audio for this playback without disturbing anything else. The
+   * AudioContext stays up so nowUs() keeps advancing and video plays on,
+   * silent. Ignores stale generations, so a late error from a previous play
+   * cannot kill the current one.
+   */
   _halt(gen) {
     if (gen !== this.generation) return;
     if (this.pumpTimer) { clearInterval(this.pumpTimer); this.pumpTimer = null; }
     this.decoder = null; // it closed itself
   }
 
+  /**
+   * Feed the decoder up to LOOKAHEAD seconds beyond the playhead, called on a
+   * 250 ms timer. Bounded two ways: by the media horizon so a seek does not
+   * decode the rest of the file, and by decodeQueueSize so a slow decoder
+   * applies back-pressure instead of accumulating a queue it will never
+   * drain. Flushes once at end of track to emit the decoder's tail.
+   */
   _pump(gen) {
     if (gen !== this.generation || !this.active) return;
     if (!this.decoder || this.decoder.state === 'closed') { this._halt(gen); return; }
@@ -160,6 +188,14 @@ class AudioEngine {
     }
   }
 
+  /**
+   * Decoder output → one scheduled AudioBufferSourceNode. This is where
+   * sample-accuracy is won or lost, so the timeline is authoritative: a
+   * buffer is placed at the context time its media timestamp maps to, and
+   * anything that cannot land there is trimmed rather than pushing the
+   * timeline around. AudioData must be close()d on every path, including the
+   * failure ones, or the decoder starves on its own back-pressure.
+   */
   _onData(data, gen) {
     if (gen !== this.generation || !this.active) { data.close(); return; }
 
@@ -203,6 +239,12 @@ class AudioEngine {
     src.start(when, offset);
   }
 
+  /**
+   * Silence everything now and orphan the in-flight work. Bumping the
+   * generation is what makes that safe: decoder callbacks already queued will
+   * see a stale gen and drop their output instead of scheduling sound after
+   * the stop.
+   */
   stop() {
     this.generation++;
     this.active = false;
@@ -215,16 +257,24 @@ class AudioEngine {
     this.decoder = null;
   }
 
+  /** Mute via the gain node — playback keeps running, so the clock is unaffected. */
   setMuted(m) {
     this.muted = m;
     if (this.gain) this.gain.gain.value = m ? 0 : this.volume;
   }
 
+  /** Set gain (0..1). Remembered while muted and restored on unmute. */
   setVolume(v) {
     this.volume = v;
     if (this.gain && !this.muted) this.gain.gain.value = v;
   }
 
+  /**
+   * Drop the track entirely. closeCtx=false keeps the AudioContext alive,
+   * which is what load() wants between files: the context was granted by a
+   * user gesture, and closing it would mean the next play has no running
+   * clock until the user clicks again.
+   */
   destroy(closeCtx = true) {
     this.stop();
     this.samples = [];

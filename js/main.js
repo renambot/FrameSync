@@ -68,6 +68,7 @@
     mediaSel.disabled = true;
   }
 
+  /** Show a message in the error bar. Non-fatal: playback keeps whatever state it had. */
   function showError(msg) {
     errorBox.textContent = msg;
     errorBox.hidden = false;
@@ -76,6 +77,11 @@
 
   // ---- readout --------------------------------------------------------
 
+  /**
+   * HH:MM:SS:FF from a frame index. Derived from the index and an integer fps
+   * rather than from the media timestamp, so the frame field always counts
+   * 0..fps-1 exactly — assumes constant, non-drop-frame rate.
+   */
   function timecode(index, fps) {
     const ff = index % fps;
     const totalSec = Math.floor(index / fps);
@@ -86,6 +92,7 @@
     return `${p(hh)}:${p(mm)}:${p(ss)}:${p(ff)}`;
   }
 
+  /** Player callback: a new frame is on screen — refresh every readout from it. */
   function onFrame(index, tsMicros) {
     tcEl.textContent = timecode(index, fpsInt);
     frameNowEl.textContent = String(index).padStart(String(meta.info.sampleCount - 1).length, '0');
@@ -95,12 +102,14 @@
     if (!player.playing) broadcastNow(); // paused seeks/steps propagate promptly
   }
 
+  /** Player callback: play/pause changed. Forced broadcast — a transition must not be coalesced away. */
   function onPlayState(playing) {
     btnPlay.textContent = playing ? '❚❚' : '▶';
     btnPlay.setAttribute('aria-label', playing ? 'Pause (Space)' : 'Play (Space)');
     broadcastNow(true);
   }
 
+  /** Player callback: pipeline health line (queue depths, pacing drops, active clock). */
   function onStats(s) {
     statsEl.textContent =
       `decode queue ${s.decodeQueue} · buffered ${s.buffered} · ` +
@@ -109,6 +118,12 @@
 
   // ---- GOP strip: every keyframe in the file, plus the playhead --------
 
+  /**
+   * Draw the keyframe map: one tick per sync sample plus the playhead. This is
+   * the file's real random-access structure, so the spacing of the ticks is
+   * also a readout of what a seek is about to cost. Re-sized to the device
+   * pixel ratio each call, since a 1 px tick must not be blurred away.
+   */
   function drawGopStrip(currentIndex) {
     if (!meta) return;
     const dpr = window.devicePixelRatio || 1;
@@ -140,6 +155,12 @@
     return loadBuffer(await file.arrayBuffer(), file.name, null);
   }
 
+  /**
+   * Load a server-relative URL. The whole file is fetched before demuxing —
+   * that is what makes every seek instant — so `loadingSrc` guards against a
+   * second load starting while one is in flight (a follower can be told to
+   * load the same src repeatedly while the first fetch is still running).
+   */
   async function loadFromUrl(src) {
     loadingSrc = true; // one URL load at a time, whoever initiates it
     try {
@@ -151,6 +172,12 @@
     }
   }
 
+  /**
+   * The one path every load funnels through: demux, configure video and
+   * audio, wire the player up, and reset the UI to the new file. Re-applies
+   * the pending filter and, for a follower, the last master state, so a file
+   * arriving late still lands in the right place with the right look.
+   */
   async function loadBuffer(buffer, name, src) {
     clearError();
     dropHint.hidden = false;
@@ -307,6 +334,13 @@
     if (sync && sync.connected && player && player.frameCount) sendAnchor();
   }
 
+  /**
+   * Publish this master's playback state, rate-limited to ~10 Hz. force=true
+   * skips the limiter and is for events that must not be coalesced away
+   * (play/pause, a filter change). The seq===0 branch is the join problem: a
+   * new master must not stamp its own frame over a timeline that is already
+   * running, so it defers to a stored state or waits briefly for one.
+   */
   function broadcastNow(force = false) {
     if (adopting) return;
     if (role !== 'master' || !sync || !sync.connected || !player || !player.frameCount) return;
@@ -323,6 +357,12 @@
     sendAnchor();
   }
 
+  /**
+   * Send the anchor: where the playhead is, and the shared-clock instant it
+   * was there. Followers extrapolate from the pair, so latency on this
+   * message cannot shift anyone's playback. Carries the src and the look
+   * (filter, amount, layout, eye swap) so a follower can self-configure.
+   */
   function sendAnchor() {
     lastBroadcast = performance.now();
     sync.sendState({
@@ -338,6 +378,13 @@
     });
   }
 
+  /**
+   * Follower: adopt a master state. Filter and src changes are handled first
+   * because they can require a load; the clock is only followed once the
+   * right file is actually in the player, and loadBuffer re-applies the state
+   * on arrival. Playing states hand a mapping to followExternal() rather than
+   * a position, so the follower keeps tracking between messages.
+   */
   async function applyState(s) {
     lastMasterState = s;
     if (s.filter !== undefined && (s.filter !== filterName
@@ -364,6 +411,11 @@
     }
   }
 
+  /**
+   * Enable exactly what this role may touch. A follower's transport is
+   * disabled outright — its timeline belongs to the master, and a local seek
+   * would only be overwritten on the next anchor.
+   */
   function updateRoleUI() {
     const follower = role === 'follower';
     const haveVideo = Boolean(player && player.frameCount);
@@ -378,6 +430,7 @@
     }
   }
 
+  /** The header's one-line sync readout: role, RTT, and follower error. */
   function renderSyncStatus(s) {
     if (role === 'solo') { syncStatusEl.textContent = ''; return; }
     if (!s || !s.connected) { syncStatusEl.textContent = `○ ${role} · connecting…`; return; }
@@ -386,6 +439,7 @@
       (masterLost && role === 'follower' ? ' · MASTER LOST' : '');
   }
 
+  /** Gate every transport control on "a file is loaded", then re-apply role limits. */
   function setControlsEnabled(on) {
     for (const el of [btnPlay, btnRestart, btnBack, btnFwd, btnJumpBack, btnJumpFwd, slider, rateSel, frameGoto, btnLoop]) {
       el.disabled = !on;
@@ -408,6 +462,7 @@
 
   const fmtSize = (b) => b >= 1e9 ? (b / 1e9).toFixed(1) + ' GB' : Math.round(b / 1e6) + ' MB';
 
+  /** Rebuild the picker: server media, then recent local files, then Browse…. */
   function populateMediaSel() {
     mediaSel.innerHTML = '';
     mediaSel.append(new Option('Open video…', ''));
@@ -427,6 +482,11 @@
     mediaSel.value = '';
   }
 
+  /**
+   * Ask the server what it can serve. Failure is expected and silent — the
+   * page also runs off plain static hosting with no /media endpoint, where the
+   * picker is still useful for local files.
+   */
   async function refreshServerMedia() {
     try {
       const r = await fetch('media'); // relative: works behind path prefixes
@@ -445,6 +505,7 @@
     });
   }
 
+  /** Read the recents list, newest first. Any failure degrades to an empty list. */
   async function loadRecents() {
     if (!hasFSAccess) return;
     try {
@@ -459,6 +520,11 @@
     } catch (e) { recents = []; }
   }
 
+  /**
+   * Record a file handle as recently used and trim the list to eight. Wholly
+   * best-effort: a failure here must never interfere with the load that
+   * prompted it, so everything is swallowed.
+   */
   async function rememberRecent(handle) {
     if (!hasFSAccess || !handle) return;
     try {
@@ -479,6 +545,11 @@
     } catch (e) { /* recents are best-effort */ }
   }
 
+  /**
+   * Browse for a file. Prefers showOpenFilePicker, whose handle can be stored
+   * and reopened later; falls back to a plain <input type=file> elsewhere,
+   * which loads fine but cannot be remembered.
+   */
   async function openLocal() {
     if (!hasFSAccess) { fileInput.click(); return; }
     let handle;
@@ -491,6 +562,11 @@
     await loadFile(await handle.getFile());
   }
 
+  /**
+   * Reopen a stored handle. Read permission does not survive the session, so a
+   * re-grant is requested; a declined prompt is a silent no-op, while a moved
+   * or deleted file is reported — the user needs to know why it did not open.
+   */
   async function openRecent(name) {
     const rec = recents.find((r) => r.name === name);
     if (!rec) return;
@@ -563,6 +639,7 @@
     }
   })();
 
+  /** No usable WebGPU: grey the filter controls out and say so in the tooltip. */
   function disableFilterUI(why) {
     filterSel.disabled = true;
     filterAmt.disabled = true;
@@ -571,7 +648,12 @@
     filterSel.title = why;
   }
 
-  /** Apply current filter settings to the player (persists across loads). */
+  /**
+   * Push the filter state into both the UI and the player, and the single
+   * place either is allowed to change. Called on every edit and after every
+   * load — the settings are page state, not per-file state, so they survive a
+   * file change. Redraws when paused, since nothing else would.
+   */
   function applyFilter() {
     filterSel.value = filterName;
     filterAmt.value = String(Math.round(filterAmount * 100));
@@ -614,6 +696,7 @@
     broadcastNow(true);
   });
 
+  /** Set looping on the player and the button together (they can drift otherwise). */
   function setLoop(on) {
     loopOn = on;
     if (player) player.loop = on;
@@ -664,6 +747,11 @@
   const hasWindowMgmt = 'getScreenDetails' in window;
   if (!hasWindowMgmt) screenSel.hidden = true;
 
+  /**
+   * Get the display list, requesting it at most once and caching it. The call
+   * prompts for permission, so callers must be inside a user gesture; a
+   * refusal returns null and fullscreen falls back to the current display.
+   */
   async function ensureScreens() {
     if (!hasWindowMgmt) return null;
     if (!screenDetails) {
@@ -674,6 +762,11 @@
     return screenDetails;
   }
 
+  /**
+   * Rebuild the display list, keeping the current pick where possible — this
+   * also runs on 'screenschange', and a monitor being plugged in must not
+   * silently retarget a wall node's fullscreen.
+   */
   function populateScreenSel() {
     if (!screenDetails) return;
     const prev = screenSel.value;
@@ -697,6 +790,11 @@
     if (document.fullscreenElement) enterFullscreen(); // move it live
   });
 
+  /**
+   * Take the stage fullscreen, on the chosen display when one is selected and
+   * permitted. Browsers only grant fullscreen inside a gesture, so a refusal
+   * is swallowed: the ?fullscreen path retries on the first real interaction.
+   */
   async function enterFullscreen() {
     let opts;
     if (desiredScreen !== null) {
@@ -706,6 +804,7 @@
     try { await stage.requestFullscreen(opts); } catch (e) { /* no gesture yet */ }
   }
 
+  /** Fullscreen toggle behind both the ⛶ button and the F key. */
   function toggleFullscreen() {
     if (document.fullscreenElement) document.exitFullscreen();
     else enterFullscreen();
