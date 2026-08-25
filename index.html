@@ -247,7 +247,7 @@
   }
   #btn-play { min-width: 64px; }
   #media-sel { margin-left: auto; max-width: 320px; }
-  #volume {
+  #volume, #filter-amt {
     width: 90px;
     appearance: none;
     -webkit-appearance: none;
@@ -255,19 +255,19 @@
     background: transparent;
     cursor: pointer;
   }
-  #volume:disabled { cursor: default; opacity: 0.4; }
-  #volume::-webkit-slider-runnable-track {
+  #volume:disabled, #filter-amt:disabled { cursor: default; opacity: 0.4; }
+  #volume::-webkit-slider-runnable-track, #filter-amt::-webkit-slider-runnable-track {
     height: 4px; background: var(--panel-edge); border-radius: 2px;
   }
-  #volume::-webkit-slider-thumb {
+  #volume::-webkit-slider-thumb, #filter-amt::-webkit-slider-thumb {
     -webkit-appearance: none;
     width: 12px; height: 12px; margin-top: -4px;
     border-radius: 50%; background: var(--muted); border: none;
   }
-  #volume::-moz-range-track {
+  #volume::-moz-range-track, #filter-amt::-moz-range-track {
     height: 4px; background: var(--panel-edge); border-radius: 2px;
   }
-  #volume::-moz-range-thumb {
+  #volume::-moz-range-thumb, #filter-amt::-moz-range-thumb {
     width: 12px; height: 12px; border-radius: 50%;
     background: var(--muted); border: none;
   }
@@ -368,6 +368,19 @@
         <option value="" selected>Open video…</option>
       </select>
       <input id="file-input" type="file" accept="video/mp4,video/quicktime,.mp4,.mov,.m4v" hidden>
+      <select id="filter-sel" title="GPU filter (WebGPU)" aria-label="GPU filter">
+        <option value="none" selected>no filter</option>
+        <option value="grayscale">grayscale</option>
+        <option value="sepia">sepia</option>
+        <option value="invert">invert</option>
+        <option value="brightness">brightness</option>
+        <option value="contrast">contrast</option>
+        <option value="saturation">saturation</option>
+        <option value="hue">hue</option>
+        <option value="sharpen">sharpen</option>
+      </select>
+      <input id="filter-amt" type="range" min="0" max="200" value="100"
+             title="Filter amount (100% = natural strength)" aria-label="Filter amount">
     </div>
   </div>
 
@@ -389,6 +402,7 @@
   <script src="js/syncclient.js"></script>
   <script src="js/audio.js"></script>
   <script src="js/player.js"></script>
+  <script src="js/gpufilter.js"></script>
   <script src="js/main.js"></script>
 </body>
 </html>

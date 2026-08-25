@@ -28,6 +28,8 @@
   const btnFs = $('btn-fs');
   const btnLoop = $('btn-loop');
   let loopOn = false;
+  const filterSel = $('filter-sel');
+  const filterAmt = $('filter-amt');
 
   const slider = $('scrubber');
   const gopCanvas = $('gop-strip');
@@ -202,6 +204,7 @@
       volSlider.disabled = !hasAudio;
       btnMute.textContent = hasAudio && audioEngine.muted ? '🔇' : '🔊';
       player.loop = loopOn;
+      applyFilter();
       if (viewport) player.setViewport(viewport, { fit: viewportFit, wallGrid });
       loadedSrc = src;
       updateRoleUI();
@@ -326,11 +329,18 @@
       rate: player.playing ? player.rate : 0,
       playing: player.playing,
       src: loadedSrc,
+      filter: filterName,
+      famount: filterAmount,
     });
   }
 
   async function applyState(s) {
     lastMasterState = s;
+    if (s.filter !== undefined && (s.filter !== filterName || (s.famount ?? 1) !== filterAmount)) {
+      filterName = s.filter || 'none';
+      filterAmount = s.famount ?? 1;
+      applyFilter();
+    }
     if (s.src && s.src !== loadedSrc) {
       if (!loadingSrc) loadFromUrl(s.src).catch((err) => showError(String(err.message || err)));
       return; // loadBuffer re-applies lastMasterState once loaded
@@ -351,6 +361,10 @@
     const haveVideo = Boolean(player && player.frameCount);
     for (const el of [btnPlay, btnRestart, btnBack, btnFwd, btnJumpBack, btnJumpFwd, slider, rateSel, frameGoto, btnLoop]) {
       el.disabled = follower || !haveVideo;
+    }
+    if (gpuFilter) { // follower filters come from the master
+      filterSel.disabled = follower;
+      filterAmt.disabled = follower;
     }
   }
 
@@ -501,6 +515,53 @@
   btnJumpBack.addEventListener('click', () => jumpSeconds(-1));
   btnJumpFwd.addEventListener('click', () => jumpSeconds(1));
   rateSel.addEventListener('change', () => player?.setRate(Number(rateSel.value)));
+
+  // ---- GPU filters (WebGPU) ----------------------------------------------
+
+  const FILTER_IDS = { none: 0, grayscale: 1, sepia: 2, invert: 3, brightness: 4, contrast: 5, saturation: 6, hue: 7, sharpen: 8 };
+  let gpuFilter = null;
+  let filterName = 'none';
+  let filterAmount = 1;
+
+  (async () => {
+    if (!GPUFilter.supported) { disableFilterUI('WebGPU not available in this browser'); return; }
+    gpuFilter = new GPUFilter();
+    if (!(await gpuFilter.init())) {
+      gpuFilter = null;
+      disableFilterUI('WebGPU initialization failed');
+    }
+  })();
+
+  function disableFilterUI(why) {
+    filterSel.disabled = true;
+    filterAmt.disabled = true;
+    filterSel.title = why;
+  }
+
+  /** Apply current filter settings to the player (persists across loads). */
+  function applyFilter() {
+    filterSel.value = filterName;
+    filterAmt.value = String(Math.round(filterAmount * 100));
+    if (!player) return;
+    if (gpuFilter && filterName !== 'none' && FILTER_IDS[filterName]) {
+      gpuFilter.set(FILTER_IDS[filterName], filterAmount);
+      player.filterFn = (f) => gpuFilter.apply(f);
+    } else {
+      player.filterFn = null;
+    }
+    if (!player.playing) player.redraw();
+  }
+
+  filterSel.addEventListener('change', () => {
+    filterName = filterSel.value;
+    applyFilter();
+    broadcastNow(true);
+  });
+  filterAmt.addEventListener('input', () => {
+    filterAmount = Number(filterAmt.value) / 100;
+    applyFilter();
+    broadcastNow();
+  });
 
   function setLoop(on) {
     loopOn = on;
@@ -685,6 +746,12 @@
   if (viewport) stage.classList.add('tiled');
 
   if (params.has('loop')) setLoop(true);
+  const paramFilter = params.get('filter');
+  if (paramFilter && paramFilter in FILTER_IDS) {
+    filterName = paramFilter;
+    filterAmount = Number(params.get('famount') || 1) || 1;
+    applyFilter();
+  }
   const paramSrc = params.get('src');
   if (paramSrc) loadFromUrl(paramSrc).catch((e) => showError(String(e.message || e)));
 

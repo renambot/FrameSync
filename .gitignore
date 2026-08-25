@@ -7,3 +7,5 @@
 test/*
 !test/frames-30fps.mp4
 !test/frames-30fps-audio.mp4
+# local media library (docker compose mounts this at /app/videos)
+videos/

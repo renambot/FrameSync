@@ -34,6 +34,7 @@ class FramePlayer {
     this.presOrder = []; // presentation index -> decode index
     this.tsToIndex = new Map(); // µs timestamp -> presentation index
 
+    this.filterFn = null; // (VideoFrame) => drawable | null — GPU filter stage
     this.viewport = null; // {x,y,w,h} normalized tile/crop rect for walls
     this.fitMode = 'fill';   // 'fill': viewport crops the source directly;
                              // 'contain': viewport is a wall-space rect and
@@ -180,6 +181,9 @@ class FramePlayer {
    */
   _draw(frame) {
     const W = frame.displayWidth, H = frame.displayHeight;
+    // The filter stage returns a same-sized drawable (or null to bypass),
+    // so all geometry below applies unchanged.
+    const src = this.filterFn ? (this.filterFn(frame) || frame) : frame;
     const v = this.viewport;
 
     if (v && this.fitMode === 'contain') {
@@ -208,7 +212,7 @@ class FramePlayer {
       }
       this.ctx.fillStyle = '#000';
       this.ctx.fillRect(0, 0, cw, ch);
-      this.ctx.drawImage(frame, 0, 0, W, H,
+      this.ctx.drawImage(src, 0, 0, W, H,
         (vr.x - v.x) * wallPxW, (vr.y - v.y) * wallPxH, W, H);
       return;
     }
@@ -220,7 +224,7 @@ class FramePlayer {
       this.canvas.width = cw;
       this.canvas.height = ch;
     }
-    this.ctx.drawImage(frame, sx, sy, sw, sh, 0, 0, cw, ch);
+    this.ctx.drawImage(src, sx, sy, sw, sh, 0, 0, cw, ch);
   }
 
   /** Set (or clear) the tile rect and fit mode; re-renders the held frame. */
