@@ -20,8 +20,9 @@ modern low-level web media stack:
 - **Web Audio** — decoded AAC is scheduled sample-accurately on the
   `AudioContext` timeline.
 - **WebGPU** — WGSL shaders filter every frame with no readback: each
-  `VideoFrame` becomes a `GPUExternalTexture`, including row-interleaved and
-  anaglyph **stereo 3D** from side-by-side sources.
+  `VideoFrame` becomes a `GPUExternalTexture`, including row-interleaved,
+  anaglyph, and single-eye **stereo 3D** from side-by-side or top/bottom
+  sources.
 
 ## Run it
 
@@ -95,18 +96,28 @@ unfiltered.
 
 ### Stereo 3D
 
-Three techniques consume a **double-wide side-by-side** frame (left eye
-beside right eye), each in two variants: **(side-by-side)** for full SBS,
-where each half is already the eye's native width (output is half the frame
-width, mapped 1:1), and **(half side-by-side)** for HSBS, where each half is
-squeezed 2× (output is the full frame width, un-squeezing each eye). All
-offer the ⇄ **swap eyes** button, for displays whose polarization phase — or
-glasses whose colours — run the other way round, and none use the amount
-slider (it hides itself).
+Five **techniques** consume a frame-packed stereo pair. Which technique to
+use and how the source packs the pair are independent choices, so they are
+two menus rather than one entry per combination: picking anything from the
+filter dropdown's **stereo pair** group reveals a **layout** menu beside it,
+plus the ⇄ **swap eyes** button (for displays whose polarization phase — or
+glasses whose colours — run the other way round; it also exchanges which
+half the single-eye views show). None of them use the amount slider, which
+hides itself.
+
+Layouts, all emitting one eye at its native geometry:
+
+| layout | source frame | eyes | output |
+| --- | --- | --- | --- |
+| **side-by-side** | 2W × H | left beside right, native width | W × H, mapped 1:1 |
+| **half side-by-side** | W × H | squeezed 2× horizontally | W × H, un-squeezed |
+| **top/bottom** | W × 2H | left above right, native height | W × H, mapped 1:1 |
+
+Techniques:
 
 - **3D interlace** — row-interleaved for passive 3D displays: **even rows
   from the left eye, odd rows from the right**, each sampled at the same
-  vertical position so the eyes stay aligned.
+  position in its own half so the eyes stay aligned.
 - **3D anaglyph B/W** — the classic monochrome red/cyan: each eye's Rec.709
   luma into its own channel (left → red, right → green+blue). No colour, but
   the least retinal rivalry and ghosting of any method, and the safest choice
@@ -117,13 +128,19 @@ slider (it hides itself).
   colour than naive channel separation while staying comfortable; extreme
   colours clamp. Identical eyes reproduce near-neutral grey, so mono content
   looks normal through the glasses.
+- **left eye only** / **right eye only** — one eye of the pair as ordinary
+  2D, un-squeezed to its native geometry. No glasses, no display
+  requirements: it is the quickest way to confirm the layout and eye order
+  are right, to play 3D material on a 2D wall, and to compare the two eyes
+  by toggling between them.
 
-Both anaglyph modes need no pixel alignment, so they scale and letterbox
-freely, unlike the interlace.
+The anaglyphs and the single-eye views need no pixel alignment, so they
+scale and letterbox freely, unlike the interlace.
 
 Stereo runs before the crop/fit stage, so it composes with tiling — and the
-filter choice and eye swap both ride in the synced state, so one master
-drives a whole 3D wall (`?filter=stereo&swapeyes` for kiosk launches).
+filter choice, layout, and eye swap all ride in the synced state, so one
+master drives a whole 3D wall (`?filter=stereo&slayout=tb&swapeyes` for
+kiosk launches).
 
 **Pixel alignment is everything for the interlace**: interleaving only works if output row
 N lands on physical display row N. Any scaling destroys the effect, so the
@@ -219,7 +236,8 @@ identical frame (error 0.0 ms).
 | `loop` | loop at end of file |
 | `fullscreen` (or `fs`) | stage fullscreen — video only, cursor hidden |
 | `screen=N` | display index fullscreen targets (Window Management API) |
-| `filter=name` + `famount=1.0` | GPU filter at load (grayscale, sepia, invert, swirl, stereo, stereo-half, anaglyph, anaglyph-half, anaglyph-dubois, anaglyph-dubois-half) |
+| `filter=name` + `famount=1.0` | GPU filter at load (grayscale, sepia, invert, swirl, stereo, anaglyph, anaglyph-dubois, left-eye, right-eye) |
+| `slayout=sbs\|half-sbs\|tb` | stereo source layout (default `sbs`) |
 | `swapeyes` | start any stereo mode with the eyes swapped |
 | `tile=col,row,cols,rows` | show one grid slice of the wall (tiled mode) |
 | `crop=x,y,w,h` | show an arbitrary normalized rect (bezel compensation) |
@@ -348,7 +366,8 @@ box=1:boxcolor=black@0.7:boxborderw=20" \
 | Go to frame + Enter | jump to an exact frame index |
 | 🔁 / L | loop at end of file |
 | ⛶ / F | fullscreen (stage only) |
-| filter dropdown | GPU filter (grayscale, sepia, invert, swirl, stereo 3D) |
+| filter dropdown | GPU filter (grayscale, sepia, invert, swirl, stereo 3D, single eye) |
+| layout dropdown | stereo source layout — SBS, half SBS, top/bottom (3D filters only) |
 | amount slider | filter strength (hidden for stereo modes) |
 | ⇄ | swap left/right eye (stereo filters) |
 

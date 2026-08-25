@@ -18,6 +18,7 @@ class GPUFilter {
     this.mode = 0;
     this.amount = 1;
     this.swapEyes = false;
+    this.layout = 0;
   }
 
   static get supported() { return 'gpu' in navigator; }
@@ -49,7 +50,7 @@ class GPUFilter {
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       });
       this.uarr = new ArrayBuffer(32);
-      this.uu32 = new Uint32Array(this.uarr); // [0] mode, [4] swap
+      this.uu32 = new Uint32Array(this.uarr); // [0] mode, [4] swap, [5] layout
       this.uf32 = new Float32Array(this.uarr); // [1] amount, [2] w, [3] h
 
       this.ready = true;
@@ -60,24 +61,33 @@ class GPUFilter {
     }
   }
 
-  /** mode: index into the shader's filter switch (0 = none). amount: 0..2. */
-  set(mode, amount, swapEyes = false) {
+  /**
+   * mode: index into the shader's filter switch (0 = none). amount: 0..2.
+   * layout: how a stereo source packs the eye pair (GPUFilter.LAYOUT_*).
+   */
+  set(mode, amount, swapEyes = false, layout = 0) {
     this.mode = mode | 0;
     this.amount = amount;
     this.swapEyes = Boolean(swapEyes);
+    this.layout = layout | 0;
   }
 
+  /** True while the mode reads a packed stereo pair (modes 5..9). */
+  get isStereo() { return this.mode >= 5 && this.mode <= 9; }
+
   /**
-   * Output size for a mode. The stereo interlace consumes a double-wide
-   * side-by-side frame and emits a single eye-width image (modes 5, 7, 9),
-   * or un-squeezes a half-SBS frame across the full width (modes 6, 8, 10).
+   * Output size for the current mode. A stereo mode emits ONE eye, so it
+   * drops the packing axis back to native: full side-by-side halves the
+   * width, top/bottom halves the height, and half side-by-side keeps the
+   * frame size (each squeezed eye un-squeezes across it). Mono filters and
+   * a bypassed stage pass the frame size through.
    */
   outputSize(frame) {
     const w = frame.displayWidth, h = frame.displayHeight;
-    // Full-SBS stereo modes emit one eye's width; half-SBS modes un-squeeze
-    // across the full width, as do all the mono filters.
-    const halves = this.mode === 5 || this.mode === 7 || this.mode === 9;
-    return halves ? { w: Math.max(1, w >> 1), h } : { w, h };
+    if (!this.isStereo) return { w, h };
+    if (this.layout === GPUFilter.LAYOUT_SBS) return { w: Math.max(1, w >> 1), h };
+    if (this.layout === GPUFilter.LAYOUT_TB) return { w, h: Math.max(1, h >> 1) };
+    return { w, h }; // LAYOUT_HALF_SBS: un-squeeze in place
   }
 
   /** Filter one frame; returns the drawable canvas, or null to bypass. */
@@ -91,6 +101,7 @@ class GPUFilter {
     try {
       this.uu32[0] = this.mode;
       this.uu32[4] = this.swapEyes ? 1 : 0;
+      this.uu32[5] = this.layout; // shader field is 'pack' — 'layout' is reserved in WGSL
       this.uf32[1] = this.amount;
       this.uf32[2] = w;   // output dimensions: the shader works in output space
       this.uf32[3] = h;
@@ -128,8 +139,15 @@ class GPUFilter {
   }
 }
 
+// Stereo source packings, the shader's P.pack ('layout' is a reserved WGSL
+// keyword). SBS/HALF_SBS split across x, TB splits across y; the shader only
+// needs the axis, outputSize() handles the squeeze.
+GPUFilter.LAYOUT_SBS = 0;       // 2W x H: each half is the eye's native width
+GPUFilter.LAYOUT_HALF_SBS = 1;  // W x H: each half squeezed 2x horizontally
+GPUFilter.LAYOUT_TB = 2;        // W x 2H: eyes stacked, top eye first
+
 GPUFilter.WGSL = /* wgsl */`
-struct Params { mode: u32, amount: f32, w: f32, h: f32, swap: u32 };
+struct Params { mode: u32, amount: f32, w: f32, h: f32, swap: u32, pack: u32 };
 @group(0) @binding(0) var samp: sampler;
 @group(0) @binding(1) var tex: texture_external;
 @group(0) @binding(2) var<uniform> P: Params;
@@ -142,35 +160,38 @@ struct Params { mode: u32, amount: f32, w: f32, h: f32, swap: u32 };
 
 const LUMA = vec3f(0.2126, 0.7152, 0.0722);
 
+// Source UV for one eye of a packed stereo pair. uv is in output space
+// (0..1 spanning exactly one eye either way), so the same half-range map
+// serves every layout: full side-by-side lands 1:1 because the output is
+// already one eye wide, half side-by-side stretches the squeezed eye back
+// across the full width, and top/bottom does the same down the y axis.
+fn eyeUV(uv: vec2f, rightEye: bool) -> vec2f {
+  var second = rightEye;
+  if (P.swap != 0u) { second = !second; }
+  var off = 0.0;
+  if (second) { off = 0.5; }
+  if (P.pack == 2u) { return vec2f(uv.x, uv.y * 0.5 + off); }
+  return vec2f(uv.x * 0.5 + off, uv.y);
+}
+
 @fragment fn fs(@builtin(position) fragCoord: vec4f) -> @location(0) vec4f {
   var uv = fragCoord.xy / vec2f(P.w, P.h);
   let a = P.amount;
 
-  // Stereo row interleave (5 = SBS, 6 = half-SBS): even output rows come
-  // from the left half of the frame, odd rows from the right half, sampled
-  // at the same vertical position so the eyes stay aligned. P.w is the
-  // output width, so fragCoord.x/P.w spans exactly one eye either way:
-  // mode 5 maps 1:1 (eye-width output), mode 6 stretches the squeezed
-  // half-SBS eye back across the full width.
-  if (P.mode == 5u || P.mode == 6u) {
+  // Row interleave for passive 3D displays: even output rows come from the
+  // left eye, odd rows from the right, both sampled at the same position in
+  // their own half so the eyes stay vertically aligned.
+  if (P.mode == 5u) {
     let odd = (u32(fragCoord.y) & 1u) == 1u;
-    let swapped = P.swap != 0u;
-    var off = 0.0;
-    if (odd != swapped) { off = 0.5; }
-    let su = fragCoord.x / P.w * 0.5 + off;
-    return vec4f(textureSampleBaseClampToEdge(tex, samp, vec2f(su, uv.y)).rgb, 1.0);
+    return vec4f(textureSampleBaseClampToEdge(tex, samp, eyeUV(uv, odd)).rgb, 1.0);
   }
 
-  // Anaglyph for red/cyan glasses (7/8 = greyscale, 9/10 = Dubois).
-  if (P.mode >= 7u && P.mode <= 10u) {
-    let u = fragCoord.x / P.w * 0.5;
-    var lu = u;
-    var ru = u + 0.5;
-    if (P.swap != 0u) { lu = u + 0.5; ru = u; }
-    let L = textureSampleBaseClampToEdge(tex, samp, vec2f(lu, uv.y)).rgb;
-    let R = textureSampleBaseClampToEdge(tex, samp, vec2f(ru, uv.y)).rgb;
+  // Anaglyph for red/cyan glasses (6 = greyscale, 7 = Dubois).
+  if (P.mode == 6u || P.mode == 7u) {
+    let L = textureSampleBaseClampToEdge(tex, samp, eyeUV(uv, false)).rgb;
+    let R = textureSampleBaseClampToEdge(tex, samp, eyeUV(uv, true)).rgb;
 
-    if (P.mode <= 8u) {
+    if (P.mode == 6u) {
       // Classic monochrome anaglyph: each eye's luma into its own channel.
       // No colour, but the least retinal rivalry and ghosting of any method.
       let yl = dot(L, LUMA);
@@ -189,6 +210,12 @@ const LUMA = vec3f(0.2126, 0.7152, 0.0722);
     let outB = dot(vec3f(-0.0546, -0.0615, -0.0128), L)
              + dot(vec3f(-0.0651, -0.1287,  1.2971), R);
     return vec4f(clamp(vec3f(outR, outG, outB), vec3f(0.0), vec3f(1.0)), 1.0);
+  }
+
+  // One eye alone (8 = left, 9 = right): plain 2D, and the quickest way to
+  // confirm the layout and eye order are right before putting glasses on.
+  if (P.mode == 8u || P.mode == 9u) {
+    return vec4f(textureSampleBaseClampToEdge(tex, samp, eyeUV(uv, P.mode == 9u)).rgb, 1.0);
   }
 
   // Geometry filters warp the sample coordinate before any color work.

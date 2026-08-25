@@ -385,16 +385,25 @@
       <input id="file-input" type="file" accept="video/mp4,video/quicktime,.mp4,.mov,.m4v" hidden>
       <select id="filter-sel" title="GPU filter (WebGPU)" aria-label="GPU filter">
         <option value="none" selected>no filter</option>
-        <option value="grayscale">grayscale</option>
-        <option value="sepia">sepia</option>
-        <option value="invert">invert</option>
-        <option value="swirl">swirl</option>
-        <option value="stereo">3D interlace (side-by-side)</option>
-        <option value="stereo-half">3D interlace (half side-by-side)</option>
-        <option value="anaglyph">3D anaglyph B/W (side-by-side)</option>
-        <option value="anaglyph-half">3D anaglyph B/W (half side-by-side)</option>
-        <option value="anaglyph-dubois">3D anaglyph Dubois (side-by-side)</option>
-        <option value="anaglyph-dubois-half">3D anaglyph Dubois (half side-by-side)</option>
+        <optgroup label="image">
+          <option value="grayscale">grayscale</option>
+          <option value="sepia">sepia</option>
+          <option value="invert">invert</option>
+          <option value="swirl">swirl</option>
+        </optgroup>
+        <optgroup label="stereo pair">
+          <option value="stereo">3D interlace</option>
+          <option value="anaglyph">3D anaglyph B/W</option>
+          <option value="anaglyph-dubois">3D anaglyph Dubois</option>
+          <option value="left-eye">left eye only (2D)</option>
+          <option value="right-eye">right eye only (2D)</option>
+        </optgroup>
+      </select>
+      <select id="stereo-layout" title="Stereo source layout"
+              aria-label="Stereo source layout" hidden>
+        <option value="sbs" selected>side-by-side</option>
+        <option value="half-sbs">half side-by-side</option>
+        <option value="tb">top/bottom</option>
       </select>
       <input id="filter-amt" type="range" min="0" max="200" value="100"
              title="Filter amount (100% = natural strength)" aria-label="Filter amount">

@@ -181,8 +181,9 @@ class FramePlayer {
    */
   _draw(frame) {
     // The filter stage may hand back a drawable of different dimensions —
-    // the stereo interlace halves the width — so all geometry below follows
-    // what is actually being drawn, not the decoded frame.
+    // a stereo mode emits one eye, halving the width of a side-by-side
+    // source or the height of a top/bottom one — so all geometry below
+    // follows what is actually being drawn, not the decoded frame.
     const src = this.filterFn ? (this.filterFn(frame) || frame) : frame;
     const W = src.displayWidth || src.width, H = src.displayHeight || src.height;
     const v = this.viewport;

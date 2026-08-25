@@ -30,6 +30,7 @@
   let loopOn = false;
   const filterSel = $('filter-sel');
   const filterAmt = $('filter-amt');
+  const stereoLayoutSel = $('stereo-layout');
   const btnSwapEyes = $('btn-swap-eyes');
 
   const slider = $('scrubber');
@@ -333,16 +334,19 @@
       filter: filterName,
       famount: filterAmount,
       swapeyes: swapEyes,
+      slayout: stereoLayout,
     });
   }
 
   async function applyState(s) {
     lastMasterState = s;
     if (s.filter !== undefined && (s.filter !== filterName
-        || (s.famount ?? 1) !== filterAmount || Boolean(s.swapeyes) !== swapEyes)) {
+        || (s.famount ?? 1) !== filterAmount || Boolean(s.swapeyes) !== swapEyes
+        || (s.slayout || 'sbs') !== stereoLayout)) {
       filterName = s.filter || 'none';
       filterAmount = s.famount ?? 1;
       swapEyes = Boolean(s.swapeyes);
+      stereoLayout = s.slayout || 'sbs';
       applyFilter();
     }
     if (s.src && s.src !== loadedSrc) {
@@ -369,6 +373,7 @@
     if (gpuFilter) { // follower filters come from the master
       filterSel.disabled = follower;
       filterAmt.disabled = follower;
+      stereoLayoutSel.disabled = follower;
       btnSwapEyes.disabled = follower;
     }
   }
@@ -523,19 +528,31 @@
 
   // ---- GPU filters (WebGPU) ----------------------------------------------
 
-  const FILTER_IDS = { none: 0, grayscale: 1, sepia: 2, invert: 3, swirl: 4, stereo: 5, 'stereo-half': 6, anaglyph: 7, 'anaglyph-half': 8, 'anaglyph-dubois': 9, 'anaglyph-dubois-half': 10 };
-  // Stereo filters take a side-by-side source, so they all offer eye swap
-  // and none use the amount slider. Only the interlace needs pixel-exact
-  // rows; the anaglyphs tolerate scaling freely.
+  const FILTER_IDS = {
+    none: 0, grayscale: 1, sepia: 2, invert: 3, swirl: 4,
+    stereo: 5, anaglyph: 6, 'anaglyph-dubois': 7,
+    'left-eye': 8, 'right-eye': 9,
+  };
+  // Stereo filters read a packed eye pair, so they all take the layout menu
+  // and the eye swap, and none use the amount slider. Only the interlace
+  // needs pixel-exact rows; the anaglyphs and the single-eye views tolerate
+  // scaling freely.
   const STEREO_KIND = {
-    stereo: 'interlace', 'stereo-half': 'interlace',
-    anaglyph: 'anaglyph', 'anaglyph-half': 'anaglyph',
-    'anaglyph-dubois': 'anaglyph', 'anaglyph-dubois-half': 'anaglyph',
+    stereo: 'interlace', anaglyph: 'anaglyph', 'anaglyph-dubois': 'anaglyph',
+    'left-eye': 'eye', 'right-eye': 'eye',
+  };
+  // How the source packs the pair — orthogonal to the technique above, which
+  // is why it is its own menu rather than a filter per combination.
+  const LAYOUT_IDS = {
+    sbs: GPUFilter.LAYOUT_SBS,
+    'half-sbs': GPUFilter.LAYOUT_HALF_SBS,
+    tb: GPUFilter.LAYOUT_TB,
   };
   let gpuFilter = null;
   let filterName = 'none';
   let filterAmount = 1;
   let swapEyes = false;
+  let stereoLayout = 'sbs';
 
   (async () => {
     if (!GPUFilter.supported) { disableFilterUI('WebGPU not available in this browser'); return; }
@@ -549,6 +566,7 @@
   function disableFilterUI(why) {
     filterSel.disabled = true;
     filterAmt.disabled = true;
+    stereoLayoutSel.disabled = true;
     btnSwapEyes.disabled = true;
     filterSel.title = why;
   }
@@ -558,6 +576,8 @@
     filterSel.value = filterName;
     filterAmt.value = String(Math.round(filterAmount * 100));
     const kind = STEREO_KIND[filterName] || null;
+    stereoLayoutSel.value = stereoLayout;
+    stereoLayoutSel.hidden = !kind;
     btnSwapEyes.hidden = !kind;
     btnSwapEyes.classList.toggle('active', swapEyes);
     btnSwapEyes.setAttribute('aria-pressed', String(swapEyes));
@@ -565,7 +585,7 @@
     canvas.classList.toggle('stereo', kind === 'interlace');
     if (!player) return;
     if (gpuFilter && filterName !== 'none' && FILTER_IDS[filterName]) {
-      gpuFilter.set(FILTER_IDS[filterName], filterAmount, swapEyes);
+      gpuFilter.set(FILTER_IDS[filterName], filterAmount, swapEyes, LAYOUT_IDS[stereoLayout]);
       player.filterFn = (f) => gpuFilter.apply(f);
     } else {
       player.filterFn = null;
@@ -582,6 +602,11 @@
     filterAmount = Number(filterAmt.value) / 100;
     applyFilter();
     broadcastNow();
+  });
+  stereoLayoutSel.addEventListener('change', () => {
+    stereoLayout = stereoLayoutSel.value;
+    applyFilter();
+    broadcastNow(true);
   });
   btnSwapEyes.addEventListener('click', () => {
     swapEyes = !swapEyes;
@@ -772,7 +797,15 @@
   if (viewport) stage.classList.add('tiled');
 
   if (params.has('loop')) setLoop(true);
-  const paramFilter = params.get('filter');
+  let paramFilter = params.get('filter');
+  const paramLayout = params.get('slayout');
+  if (paramLayout && paramLayout in LAYOUT_IDS) {
+    stereoLayout = paramLayout;
+  } else if (paramFilter && paramFilter.endsWith('-half')) {
+    // Legacy kiosk URLs: the half-SBS variants used to be separate filters.
+    paramFilter = paramFilter.slice(0, -'-half'.length);
+    stereoLayout = 'half-sbs';
+  }
   if (paramFilter && paramFilter in FILTER_IDS) {
     filterName = paramFilter;
     filterAmount = Number(params.get('famount') || 1) || 1;
