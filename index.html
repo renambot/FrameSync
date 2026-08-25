@@ -258,7 +258,7 @@
   }
   #btn-play { min-width: 64px; }
   #media-sel { margin-left: auto; max-width: 320px; }
-  #volume, #filter-amt {
+  #volume {
     width: 90px;
     appearance: none;
     -webkit-appearance: none;
@@ -266,19 +266,19 @@
     background: transparent;
     cursor: pointer;
   }
-  #volume:disabled, #filter-amt:disabled { cursor: default; opacity: 0.4; }
-  #volume::-webkit-slider-runnable-track, #filter-amt::-webkit-slider-runnable-track {
+  #volume:disabled { cursor: default; opacity: 0.4; }
+  #volume::-webkit-slider-runnable-track {
     height: 4px; background: var(--panel-edge); border-radius: 2px;
   }
-  #volume::-webkit-slider-thumb, #filter-amt::-webkit-slider-thumb {
+  #volume::-webkit-slider-thumb {
     -webkit-appearance: none;
     width: 12px; height: 12px; margin-top: -4px;
     border-radius: 50%; background: var(--muted); border: none;
   }
-  #volume::-moz-range-track, #filter-amt::-moz-range-track {
+  #volume::-moz-range-track {
     height: 4px; background: var(--panel-edge); border-radius: 2px;
   }
-  #volume::-moz-range-thumb, #filter-amt::-moz-range-thumb {
+  #volume::-moz-range-thumb {
     width: 12px; height: 12px; border-radius: 50%;
     background: var(--muted); border: none;
   }
@@ -405,8 +405,6 @@
         <option value="half-sbs">half side-by-side</option>
         <option value="tb">top/bottom</option>
       </select>
-      <input id="filter-amt" type="range" min="0" max="200" value="100"
-             title="Filter amount (100% = natural strength)" aria-label="Filter amount">
       <button id="btn-swap-eyes" title="Swap left/right eye" aria-label="Swap left and right eye"
               aria-pressed="false" hidden>⇄</button>
     </div>

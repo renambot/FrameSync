@@ -9,8 +9,8 @@
  * tile / contain geometry downstream is untouched. With filter "none" the
  * stage is bypassed entirely (apply() returns null → draw the frame itself).
  *
- * amount semantics: 1.0 is the filter's natural strength (mix filters fully
- * applied, gain filters neutral-ish); 0..2 is the UI range.
+ * Filters are fixed-strength — there is no blend factor, so every colour
+ * filter is its own target value and the shader carries no mix() at all.
  */
 class GPUFilter {
   /**
@@ -21,7 +21,6 @@ class GPUFilter {
   constructor() {
     this.ready = false;
     this.mode = 0;
-    this.amount = 1;
     this.swapEyes = false;
     this.layout = 0;
   }
@@ -63,8 +62,8 @@ class GPUFilter {
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       });
       this.uarr = new ArrayBuffer(32);
-      this.uu32 = new Uint32Array(this.uarr); // [0] mode, [4] swap, [5] layout
-      this.uf32 = new Float32Array(this.uarr); // [1] amount, [2] w, [3] h
+      this.uu32 = new Uint32Array(this.uarr); // [0] mode, [3] swap, [4] layout
+      this.uf32 = new Float32Array(this.uarr); // [1] w, [2] h
 
       this.ready = true;
       return true;
@@ -75,12 +74,11 @@ class GPUFilter {
   }
 
   /**
-   * mode: index into the shader's filter switch (0 = none). amount: 0..2.
+   * mode: index into the shader's filter switch (0 = none).
    * layout: how a stereo source packs the eye pair (GPUFilter.LAYOUT_*).
    */
-  set(mode, amount, swapEyes = false, layout = 0) {
+  set(mode, swapEyes = false, layout = 0) {
     this.mode = mode | 0;
-    this.amount = amount;
     this.swapEyes = Boolean(swapEyes);
     this.layout = layout | 0;
   }
@@ -113,11 +111,10 @@ class GPUFilter {
     }
     try {
       this.uu32[0] = this.mode;
-      this.uu32[4] = this.swapEyes ? 1 : 0;
-      this.uu32[5] = this.layout; // shader field is 'pack' — 'layout' is reserved in WGSL
-      this.uf32[1] = this.amount;
-      this.uf32[2] = w;   // output dimensions: the shader works in output space
-      this.uf32[3] = h;
+      this.uf32[1] = w;   // output dimensions: the shader works in output space
+      this.uf32[2] = h;
+      this.uu32[3] = this.swapEyes ? 1 : 0;
+      this.uu32[4] = this.layout; // shader field is 'pack' — 'layout' is reserved in WGSL
       this.device.queue.writeBuffer(this.ubuf, 0, this.uarr);
 
       const ext = this.device.importExternalTexture({ source: frame });
@@ -160,7 +157,7 @@ GPUFilter.LAYOUT_HALF_SBS = 1;  // W x H: each half squeezed 2x horizontally
 GPUFilter.LAYOUT_TB = 2;        // W x 2H: eyes stacked, top eye first
 
 GPUFilter.WGSL = /* wgsl */`
-struct Params { mode: u32, amount: f32, w: f32, h: f32, swap: u32, pack: u32 };
+struct Params { mode: u32, w: f32, h: f32, swap: u32, pack: u32 };
 @group(0) @binding(0) var samp: sampler;
 @group(0) @binding(1) var tex: texture_external;
 @group(0) @binding(2) var<uniform> P: Params;
@@ -189,7 +186,6 @@ fn eyeUV(uv: vec2f, rightEye: bool) -> vec2f {
 
 @fragment fn fs(@builtin(position) fragCoord: vec4f) -> @location(0) vec4f {
   var uv = fragCoord.xy / vec2f(P.w, P.h);
-  let a = P.amount;
 
   // Row interleave for passive 3D displays: even output rows come from the
   // left eye, odd rows from the right, both sampled at the same position in
@@ -238,9 +234,10 @@ fn eyeUV(uv: vec2f, rightEye: bool) -> vec2f {
     let r = length(d);
     let radius = 0.5;
     if (r < radius) {
-      // Smooth falloff so the swirl blends into the untouched surround.
+      // Smooth falloff so the swirl blends into the untouched surround: a
+      // full rotation at the very centre, easing to none at the radius.
       let t = 1.0 - r / radius;
-      let ang = a * 3.14159265 * t * t;
+      let ang = 6.2831853 * t * t;
       let cA = cos(ang); let sA = sin(ang);
       d = vec2f(d.x * cA - d.y * sA, d.x * sA + d.y * cA);
       uv = d / vec2f(aspect, 1.0) + vec2f(0.5);
@@ -250,17 +247,16 @@ fn eyeUV(uv: vec2f, rightEye: bool) -> vec2f {
   var c = textureSampleBaseClampToEdge(tex, samp, uv).rgb;
   switch P.mode {
     case 1u: { // grayscale
-      c = mix(c, vec3f(dot(c, LUMA)), clamp(a, 0.0, 1.0));
+      c = vec3f(dot(c, LUMA));
     }
     case 2u: { // sepia
-      let s = vec3f(
+      c = vec3f(
         dot(c, vec3f(0.393, 0.769, 0.189)),
         dot(c, vec3f(0.349, 0.686, 0.168)),
         dot(c, vec3f(0.272, 0.534, 0.131)));
-      c = mix(c, s, clamp(a, 0.0, 1.0));
     }
     case 3u: { // invert
-      c = mix(c, vec3f(1.0) - c, clamp(a, 0.0, 1.0));
+      c = vec3f(1.0) - c;
     }
     // case 4u (swirl) and the stereo modes are handled above.
     default: {}

@@ -29,7 +29,6 @@
   const btnLoop = $('btn-loop');
   let loopOn = false;
   const filterSel = $('filter-sel');
-  const filterAmt = $('filter-amt');
   const stereoLayoutSel = $('stereo-layout');
   const btnSwapEyes = $('btn-swap-eyes');
 
@@ -372,7 +371,6 @@
       playing: player.playing,
       src: loadedSrc,
       filter: filterName,
-      famount: filterAmount,
       swapeyes: swapEyes,
       slayout: stereoLayout,
     });
@@ -388,10 +386,9 @@
   async function applyState(s) {
     lastMasterState = s;
     if (s.filter !== undefined && (s.filter !== filterName
-        || (s.famount ?? 1) !== filterAmount || Boolean(s.swapeyes) !== swapEyes
+        || Boolean(s.swapeyes) !== swapEyes
         || (s.slayout || 'sbs') !== stereoLayout)) {
       filterName = s.filter || 'none';
-      filterAmount = s.famount ?? 1;
       swapEyes = Boolean(s.swapeyes);
       stereoLayout = s.slayout || 'sbs';
       applyFilter();
@@ -424,7 +421,6 @@
     }
     if (gpuFilter) { // follower filters come from the master
       filterSel.disabled = follower;
-      filterAmt.disabled = follower;
       stereoLayoutSel.disabled = follower;
       btnSwapEyes.disabled = follower;
     }
@@ -626,7 +622,6 @@
   };
   let gpuFilter = null;
   let filterName = 'none';
-  let filterAmount = 1;
   let swapEyes = false;
   let stereoLayout = 'sbs';
 
@@ -642,7 +637,6 @@
   /** No usable WebGPU: grey the filter controls out and say so in the tooltip. */
   function disableFilterUI(why) {
     filterSel.disabled = true;
-    filterAmt.disabled = true;
     stereoLayoutSel.disabled = true;
     btnSwapEyes.disabled = true;
     filterSel.title = why;
@@ -656,18 +650,16 @@
    */
   function applyFilter() {
     filterSel.value = filterName;
-    filterAmt.value = String(Math.round(filterAmount * 100));
     const kind = STEREO_KIND[filterName] || null;
     stereoLayoutSel.value = stereoLayout;
     stereoLayoutSel.hidden = !kind;
     btnSwapEyes.hidden = !kind;
     btnSwapEyes.classList.toggle('active', swapEyes);
     btnSwapEyes.setAttribute('aria-pressed', String(swapEyes));
-    filterAmt.hidden = Boolean(kind); // no meaning for any stereo mode
     canvas.classList.toggle('stereo', kind === 'interlace');
     if (!player) return;
     if (gpuFilter && filterName !== 'none' && FILTER_IDS[filterName]) {
-      gpuFilter.set(FILTER_IDS[filterName], filterAmount, swapEyes, LAYOUT_IDS[stereoLayout]);
+      gpuFilter.set(FILTER_IDS[filterName], swapEyes, LAYOUT_IDS[stereoLayout]);
       player.filterFn = (f) => gpuFilter.apply(f);
     } else {
       player.filterFn = null;
@@ -679,11 +671,6 @@
     filterName = filterSel.value;
     applyFilter();
     broadcastNow(true);
-  });
-  filterAmt.addEventListener('input', () => {
-    filterAmount = Number(filterAmt.value) / 100;
-    applyFilter();
-    broadcastNow();
   });
   stereoLayoutSel.addEventListener('change', () => {
     stereoLayout = stereoLayoutSel.value;
@@ -907,7 +894,6 @@
   }
   if (paramFilter && paramFilter in FILTER_IDS) {
     filterName = paramFilter;
-    filterAmount = Number(params.get('famount') || 1) || 1;
     swapEyes = params.has('swapeyes');
     applyFilter();
   }

@@ -84,9 +84,9 @@ the file — the real random-access structure that determines seek cost.
 
 The filter dropdown applies a WGSL shader to every frame — grayscale, sepia,
 invert, and swirl (a coordinate warp: the image rotates around the centre
-with a smooth radial falloff) — with an amount slider (100 % = the filter's
-natural strength; swirl turns a half-rotation at the centre). The pipeline is
-zero-copy: each decoded `VideoFrame` is imported as a `GPUExternalTexture`
+with a smooth radial falloff, a full rotation at the very centre). Filters are
+fixed-strength: there is no blend factor, so each one is simply its own target
+value and the shader carries no `mix()` at all. The pipeline is zero-copy: each decoded `VideoFrame` is imported as a `GPUExternalTexture`
 (no readback, no upload), filtered into an offscreen canvas, and blitted by
 the normal draw path, so filters compose with tiling, contain fit, and
 fullscreen unchanged.
@@ -102,8 +102,7 @@ two menus rather than one entry per combination: picking anything from the
 filter dropdown's **stereo pair** group reveals a **layout** menu beside it,
 plus the ⇄ **swap eyes** button (for displays whose polarization phase — or
 glasses whose colours — run the other way round; it also exchanges which
-half the single-eye views show). None of them use the amount slider, which
-hides itself.
+half the single-eye views show).
 
 Layouts, all emitting one eye at its native geometry:
 
@@ -237,7 +236,7 @@ identical frame (error 0.0 ms).
 | `loop` | loop at end of file |
 | `fullscreen` (or `fs`) | stage fullscreen — video only, cursor hidden |
 | `screen=N` | display index fullscreen targets (Window Management API) |
-| `filter=name` + `famount=1.0` | GPU filter at load (grayscale, sepia, invert, swirl, stereo, anaglyph, anaglyph-dubois, left-eye, right-eye) |
+| `filter=name` | GPU filter at load (grayscale, sepia, invert, swirl, stereo, anaglyph, anaglyph-dubois, left-eye, right-eye) |
 | `slayout=sbs\|half-sbs\|tb` | stereo source layout (default `sbs`) |
 | `swapeyes` | start any stereo mode with the eyes swapped |
 | `tile=col,row,cols,rows` | show one grid slice of the wall (tiled mode) |
@@ -369,7 +368,6 @@ box=1:boxcolor=black@0.7:boxborderw=20" \
 | ⛶ / F | fullscreen (stage only) |
 | filter dropdown | GPU filter (grayscale, sepia, invert, swirl, stereo 3D, single eye) |
 | layout dropdown | stereo source layout — SBS, half SBS, top/bottom (3D filters only) |
-| amount slider | filter strength (hidden for stereo modes) |
 | ⇄ | swap left/right eye (stereo filters) |
 
 ## Files
