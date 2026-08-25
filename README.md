@@ -284,7 +284,8 @@ box=1:boxcolor=black@0.7:boxborderw=20" \
 | Space | play / pause |
 | ← / → | step one frame |
 | Shift+← / Shift+→ | jump ±1 s |
-| Home / End | first / last frame |
+| ⏮ / Home | restart from the first frame |
+| End | last frame |
 | scrubber | frame-accurate scrub (1 frame per step) |
 | Go to frame + Enter | jump to an exact frame index |
 | 🔁 / L | loop at end of file |

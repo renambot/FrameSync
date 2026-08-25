@@ -16,6 +16,7 @@
   const mediaSel = $('media-sel');
   const fileInput = $('file-input');
   const btnPlay = $('btn-play');
+  const btnRestart = $('btn-restart');
   const btnBack = $('btn-back');
   const btnFwd = $('btn-fwd');
   const btnJumpBack = $('btn-jump-back');
@@ -348,7 +349,7 @@
   function updateRoleUI() {
     const follower = role === 'follower';
     const haveVideo = Boolean(player && player.frameCount);
-    for (const el of [btnPlay, btnBack, btnFwd, btnJumpBack, btnJumpFwd, slider, rateSel, frameGoto, btnLoop]) {
+    for (const el of [btnPlay, btnRestart, btnBack, btnFwd, btnJumpBack, btnJumpFwd, slider, rateSel, frameGoto, btnLoop]) {
       el.disabled = follower || !haveVideo;
     }
   }
@@ -362,7 +363,7 @@
   }
 
   function setControlsEnabled(on) {
-    for (const el of [btnPlay, btnBack, btnFwd, btnJumpBack, btnJumpFwd, slider, rateSel, frameGoto, btnLoop]) {
+    for (const el of [btnPlay, btnRestart, btnBack, btnFwd, btnJumpBack, btnJumpFwd, slider, rateSel, frameGoto, btnLoop]) {
       el.disabled = !on;
     }
   }
@@ -494,6 +495,7 @@
   populateMediaSel();
 
   btnPlay.addEventListener('click', () => player?.toggle());
+  btnRestart.addEventListener('click', () => player?.seekToFrame(0));
   btnBack.addEventListener('click', () => player?.stepBack());
   btnFwd.addEventListener('click', () => player?.stepForward());
   btnJumpBack.addEventListener('click', () => jumpSeconds(-1));
