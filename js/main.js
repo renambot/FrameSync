@@ -523,11 +523,15 @@
 
   // ---- GPU filters (WebGPU) ----------------------------------------------
 
-  const FILTER_IDS = { none: 0, grayscale: 1, sepia: 2, invert: 3, swirl: 4, stereo: 5, 'stereo-half': 6, anaglyph: 7, 'anaglyph-half': 8 };
-  // Stereo filters take a side-by-side source, so they all offer eye swap.
-  // Only the interlace needs pixel-exact rows; anaglyph tolerates scaling
-  // and uses the amount slider as colour-to-grey mix.
-  const STEREO_KIND = { stereo: 'interlace', 'stereo-half': 'interlace', anaglyph: 'anaglyph', 'anaglyph-half': 'anaglyph' };
+  const FILTER_IDS = { none: 0, grayscale: 1, sepia: 2, invert: 3, swirl: 4, stereo: 5, 'stereo-half': 6, anaglyph: 7, 'anaglyph-half': 8, 'anaglyph-dubois': 9, 'anaglyph-dubois-half': 10 };
+  // Stereo filters take a side-by-side source, so they all offer eye swap
+  // and none use the amount slider. Only the interlace needs pixel-exact
+  // rows; the anaglyphs tolerate scaling freely.
+  const STEREO_KIND = {
+    stereo: 'interlace', 'stereo-half': 'interlace',
+    anaglyph: 'anaglyph', 'anaglyph-half': 'anaglyph',
+    'anaglyph-dubois': 'anaglyph', 'anaglyph-dubois-half': 'anaglyph',
+  };
   let gpuFilter = null;
   let filterName = 'none';
   let filterAmount = 1;
@@ -557,10 +561,7 @@
     btnSwapEyes.hidden = !kind;
     btnSwapEyes.classList.toggle('active', swapEyes);
     btnSwapEyes.setAttribute('aria-pressed', String(swapEyes));
-    filterAmt.hidden = kind === 'interlace'; // no meaning for row interleave
-    filterAmt.title = kind === 'anaglyph'
-      ? 'Colour retention (0% = grey anaglyph, least ghosting)'
-      : 'Filter amount (100% = natural strength)';
+    filterAmt.hidden = Boolean(kind); // no meaning for any stereo mode
     canvas.classList.toggle('stereo', kind === 'interlace');
     if (!player) return;
     if (gpuFilter && filterName !== 'none' && FILTER_IDS[filterName]) {

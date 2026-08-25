@@ -69,14 +69,14 @@ class GPUFilter {
 
   /**
    * Output size for a mode. The stereo interlace consumes a double-wide
-   * side-by-side frame and emits a single eye-width image (modes 5, 7), or
-   * un-squeezes a half-SBS frame across the full width (modes 6, 8).
+   * side-by-side frame and emits a single eye-width image (modes 5, 7, 9),
+   * or un-squeezes a half-SBS frame across the full width (modes 6, 8, 10).
    */
   outputSize(frame) {
     const w = frame.displayWidth, h = frame.displayHeight;
     // Full-SBS stereo modes emit one eye's width; half-SBS modes un-squeeze
     // across the full width, as do all the mono filters.
-    const halves = this.mode === 5 || this.mode === 7;
+    const halves = this.mode === 5 || this.mode === 7 || this.mode === 9;
     return halves ? { w: Math.max(1, w >> 1), h } : { w, h };
   }
 
@@ -161,21 +161,34 @@ const LUMA = vec3f(0.2126, 0.7152, 0.0722);
     return vec4f(textureSampleBaseClampToEdge(tex, samp, vec2f(su, uv.y)).rgb, 1.0);
   }
 
-  // Anaglyph (7 = SBS, 8 = half-SBS): red channel from the left eye,
-  // green+blue from the right, for red/cyan glasses. amount fades colour
-  // out to a grey anaglyph, which trades colour fidelity for much less
-  // retinal rivalry and ghosting.
-  if (P.mode == 7u || P.mode == 8u) {
+  // Anaglyph for red/cyan glasses (7/8 = greyscale, 9/10 = Dubois).
+  if (P.mode >= 7u && P.mode <= 10u) {
     let u = fragCoord.x / P.w * 0.5;
     var lu = u;
     var ru = u + 0.5;
     if (P.swap != 0u) { lu = u + 0.5; ru = u; }
     let L = textureSampleBaseClampToEdge(tex, samp, vec2f(lu, uv.y)).rgb;
     let R = textureSampleBaseClampToEdge(tex, samp, vec2f(ru, uv.y)).rgb;
-    let mixAmt = clamp(a, 0.0, 1.0);
-    let Lc = mix(vec3f(dot(L, LUMA)), L, mixAmt);
-    let Rc = mix(vec3f(dot(R, LUMA)), R, mixAmt);
-    return vec4f(Lc.r, Rc.g, Rc.b, 1.0);
+
+    if (P.mode <= 8u) {
+      // Classic monochrome anaglyph: each eye's luma into its own channel.
+      // No colour, but the least retinal rivalry and ghosting of any method.
+      let yl = dot(L, LUMA);
+      let yr = dot(R, LUMA);
+      return vec4f(yl, yr, yr, 1.0);
+    }
+
+    // Dubois: a least-squares projection of the stereo pair onto what
+    // red/cyan glasses can actually transmit (published sRGB coefficients),
+    // summing a per-eye 3x3 matrix. Keeps far more usable colour than naive
+    // channel separation at much lower rivalry; extremes clamp.
+    let outR = dot(vec3f( 0.4155,  0.4710,  0.1670), L)
+             + dot(vec3f(-0.0109, -0.0364, -0.0060), R);
+    let outG = dot(vec3f(-0.0458, -0.0484, -0.0257), L)
+             + dot(vec3f( 0.3756,  0.7333,  0.0111), R);
+    let outB = dot(vec3f(-0.0546, -0.0615, -0.0128), L)
+             + dot(vec3f(-0.0651, -0.1287,  1.2971), R);
+    return vec4f(clamp(vec3f(outR, outG, outB), vec3f(0.0), vec3f(1.0)), 1.0);
   }
 
   // Geometry filters warp the sample coordinate before any color work.

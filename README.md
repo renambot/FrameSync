@@ -95,24 +95,31 @@ unfiltered.
 
 ### Stereo 3D
 
-Four entries consume a **double-wide side-by-side** frame (left eye beside
-right eye). All four offer the ⇄ **swap eyes** button, for displays whose
-polarization phase — or glasses whose colours — run the other way round.
-Each comes in two variants: **(side-by-side)** for full SBS, where each half
-is already the eye's native width (output is half the frame width, mapped
-1:1), and **(half side-by-side)** for HSBS, where each half is squeezed 2×
-(output is the full frame width, un-squeezing each eye).
+Three techniques consume a **double-wide side-by-side** frame (left eye
+beside right eye), each in two variants: **(side-by-side)** for full SBS,
+where each half is already the eye's native width (output is half the frame
+width, mapped 1:1), and **(half side-by-side)** for HSBS, where each half is
+squeezed 2× (output is the full frame width, un-squeezing each eye). All
+offer the ⇄ **swap eyes** button, for displays whose polarization phase — or
+glasses whose colours — run the other way round, and none use the amount
+slider (it hides itself).
 
 - **3D interlace** — row-interleaved for passive 3D displays: **even rows
   from the left eye, odd rows from the right**, each sampled at the same
-  vertical position so the eyes stay aligned. The amount slider is hidden
-  (it has no meaning here).
-- **3D anaglyph** — red/cyan for anaglyph glasses: the red channel comes
-  from the left eye, green and blue from the right. Here the amount slider
-  sets **colour retention**: 100 % is a full-colour anaglyph, 0 % a grey
-  anaglyph, which loses colour but greatly reduces ghosting and retinal
-  rivalry. Anaglyph needs no pixel alignment, so it scales and letterboxes
-  freely, unlike the interlace.
+  vertical position so the eyes stay aligned.
+- **3D anaglyph B/W** — the classic monochrome red/cyan: each eye's Rec.709
+  luma into its own channel (left → red, right → green+blue). No colour, but
+  the least retinal rivalry and ghosting of any method, and the safest choice
+  for saturated content.
+- **3D anaglyph Dubois** — a least-squares projection of the stereo pair
+  onto what red/cyan glasses can actually transmit, applied as a per-eye 3×3
+  matrix (published sRGB coefficients) and summed. Keeps far more usable
+  colour than naive channel separation while staying comfortable; extreme
+  colours clamp. Identical eyes reproduce near-neutral grey, so mono content
+  looks normal through the glasses.
+
+Both anaglyph modes need no pixel alignment, so they scale and letterbox
+freely, unlike the interlace.
 
 Stereo runs before the crop/fit stage, so it composes with tiling — and the
 filter choice and eye swap both ride in the synced state, so one master
@@ -212,8 +219,8 @@ identical frame (error 0.0 ms).
 | `loop` | loop at end of file |
 | `fullscreen` (or `fs`) | stage fullscreen — video only, cursor hidden |
 | `screen=N` | display index fullscreen targets (Window Management API) |
-| `filter=name` + `famount=1.0` | GPU filter at load (grayscale, sepia, invert, swirl, stereo, stereo-half, anaglyph, anaglyph-half) |
-| `swapeyes` | start the stereo interlace with the eyes swapped |
+| `filter=name` + `famount=1.0` | GPU filter at load (grayscale, sepia, invert, swirl, stereo, stereo-half, anaglyph, anaglyph-half, anaglyph-dubois, anaglyph-dubois-half) |
+| `swapeyes` | start any stereo mode with the eyes swapped |
 | `tile=col,row,cols,rows` | show one grid slice of the wall (tiled mode) |
 | `crop=x,y,w,h` | show an arbitrary normalized rect (bezel compensation) |
 | `fit=contain` / `fit=fill` | aspect-fit the video into the wall (default with `tile`) vs stretch the slice |
@@ -342,7 +349,7 @@ box=1:boxcolor=black@0.7:boxborderw=20" \
 | 🔁 / L | loop at end of file |
 | ⛶ / F | fullscreen (stage only) |
 | filter dropdown | GPU filter (grayscale, sepia, invert, swirl, stereo 3D) |
-| amount slider | filter strength — colour retention for anaglyph |
+| amount slider | filter strength (hidden for stereo modes) |
 | ⇄ | swap left/right eye (stereo filters) |
 
 ## Files
@@ -377,3 +384,11 @@ box=1:boxcolor=black@0.7:boxborderw=20" \
   index and media time are always exact regardless.
 - HEVC support depends on platform decoders (Safari yes; Chrome only where
   the OS provides it).
+- Stereo sources must be **side-by-side** (over/under and frame-packed
+  layouts are not handled), and the whole double-wide frame is decoded on
+  every node — beyond roughly 8192 px wide, hardware decoders refuse the
+  stream, so split per-eye files and sync them instead.
+- The Dubois anaglyph uses one published sRGB coefficient set applied in
+  gamma-encoded space (as the reference implementations do); several
+  calibrations exist for different display primaries and glasses. Identical
+  eyes come out ~2.6 % short in blue, inherent to that set.
