@@ -267,6 +267,21 @@ http://SERVER:8417/?role=follower&tile=1,0,4,2&fullscreen&screen=0
   the wall. Bare `crop` keeps its source-crop meaning under `fill`; with
   `fit=contain` it is treated as the tile's wall rect (pass `wall=cols,rows`
   so the node knows the wall's shape).
+- **Launch URLs** do not have to be written by hand. Set a node up
+  interactively — file, filter, stereo layout, eye swap, loop, target display
+  — then press 🔗 to copy the URL that reproduces that state on the *other*
+  nodes, and paste it into each kiosk launcher. Wall geometry (`tile`,
+  `crop`, `wall`, `fit`) has no live UI, so it is carried over from however
+  the page was opened; everything else reflects the current controls, and
+  defaults are left out to keep the URL short. The role is always emitted as
+  `role=follower`, even when the page copying it is the master — the URL is
+  for the nodes being deployed, only one client may own the timeline, and the
+  server demotes the incumbent on every new master claim, so a `role=master`
+  URL pasted onto a whole wall would have the nodes take mastership from each
+  other in turn. A solo page copies a solo URL. The clipboard needs a secure context, which
+  plain `http://` to another machine is not — there the button falls back to
+  the legacy copy path, and if that is refused too it prints the URL in the
+  message bar so it can be selected by hand.
 - **Fullscreen** needs a user gesture: if the immediate request on load is
   refused, the first click or keypress triggers it (⛶ / F toggle any time).
   `screen=N` and the display selector next to ⛶ need the one-time
@@ -368,6 +383,7 @@ box=1:boxcolor=black@0.7:boxborderw=20" \
 | ⛶ / F | fullscreen (stage only) |
 | filter dropdown | GPU filter (grayscale, sepia, invert, swirl, stereo 3D, single eye) |
 | layout dropdown | stereo source layout — SBS, half SBS, top/bottom (3D filters only) |
+| 🔗 | copy a launch URL for another node (always as a follower) |
 | ⇄ | swap left/right eye (stereo filters) |
 
 ## Files

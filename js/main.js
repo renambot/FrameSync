@@ -38,6 +38,7 @@
   const statsEl = $('stats');
   const roleSel = $('role');
   const syncStatusEl = $('sync-status');
+  const btnCopyUrl = $('btn-copy-url');
 
   let player = null;
   let audioEngine = null;
@@ -841,6 +842,91 @@
 
   window.addEventListener('resize', () => {
     if (player && player.currentIndex >= 0) drawGopStrip(player.currentIndex);
+  });
+
+  // ---- launch URL --------------------------------------------------------
+
+  // Wall geometry is launch-time only — there is no UI that changes it — so
+  // it rides along verbatim instead of being reconstructed from the parsed
+  // viewport rect, which would be lossy (?tile and ?crop both land there).
+  const LAUNCH_PASSTHROUGH = ['tile', 'crop', 'wall', 'fit'];
+
+  /**
+   * The URL that launches *another* node with this one's setup: live UI
+   * state (src, loop, filter, stereo layout, eye swap, target display,
+   * fullscreen) on top of the launch-time wall geometry. Setting up a wall
+   * means writing one of these per node by hand today, so the output is
+   * optimised for a human reading it: flags stay bare (`?loop`, not
+   * `?loop=`), and the slashes in a path and the commas in a grid spec are
+   * left as themselves — both are legal in a query value, and `tile=1%2C0`
+   * is unreadable.
+   */
+  function launchUrl() {
+    const enc = (v) => encodeURIComponent(v).replace(/%2F/g, '/').replace(/%2C/g, ',');
+    const launched = new URLSearchParams(location.search);
+    const q = [];
+    for (const k of LAUNCH_PASSTHROUGH) {
+      if (launched.has(k)) q.push(`${k}=${enc(launched.get(k))}`);
+    }
+    if (loadedSrc) q.push(`src=${enc(loadedSrc)}`);
+    // Always follower, never master, even when this page IS the master: the
+    // URL exists to be pasted into the other nodes, exactly one client may
+    // own the timeline, and the server demotes the incumbent on every new
+    // master claim — so a master URL on eight nodes would have them take
+    // mastership from each other in turn. Solo stays solo (no sync at all).
+    if (role !== 'solo') q.push('role=follower');
+    if (loopOn) q.push('loop');
+    if (filterName !== 'none') {
+      q.push(`filter=${filterName}`);
+      // Layout and eye swap only mean anything to a stereo filter, and the
+      // defaults are already the defaults — emit neither unless it matters.
+      if (STEREO_KIND[filterName]) {
+        if (stereoLayout !== 'sbs') q.push(`slayout=${stereoLayout}`);
+        if (swapEyes) q.push('swapeyes');
+      }
+    }
+    if (desiredScreen !== null) q.push(`screen=${desiredScreen}`);
+    if (document.fullscreenElement) q.push('fullscreen');
+    return location.origin + location.pathname + (q.length ? '?' + q.join('&') : '');
+  }
+
+  /**
+   * Copy text in both worlds. navigator.clipboard needs a secure context,
+   * and the wall case — plain http:// to another machine — is precisely
+   * where there isn't one, so fall back to the legacy textarea +
+   * execCommand path, which still works there. Returns whether it landed.
+   */
+  async function copyText(text) {
+    try {
+      if (window.isSecureContext && navigator.clipboard) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch (e) { /* fall through */ }
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      ta.remove();
+      return ok;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  btnCopyUrl.addEventListener('click', async () => {
+    const url = launchUrl();
+    btnCopyUrl.title = `Copy launch URL for another node\n${url}`;
+    if (await copyText(url)) {
+      btnCopyUrl.textContent = '✓';
+      setTimeout(() => { btnCopyUrl.textContent = '🔗'; }, 1200);
+    } else {
+      // No clipboard anywhere — put it somewhere it can at least be selected.
+      showError(`Could not reach the clipboard. Launch URL: ${url}`);
+    }
   });
 
   // ---- startup from URL params: ?role=master|follower&src=test/foo.mp4 ---
