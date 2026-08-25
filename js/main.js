@@ -13,7 +13,7 @@
   const frameTotalEl = $('frame-total');
   const mediaTimeEl = $('media-time');
 
-  const btnOpen = $('btn-open');
+  const mediaSel = $('media-sel');
   const fileInput = $('file-input');
   const btnPlay = $('btn-play');
   const btnBack = $('btn-back');
@@ -60,7 +60,7 @@
 
   if (!('VideoDecoder' in window)) {
     showError('This browser has no WebCodecs support. Use a current Chrome, Edge, or Safari 16.4+.');
-    btnOpen.disabled = true;
+    mediaSel.disabled = true;
   }
 
   function showError(msg) {
@@ -370,11 +370,128 @@
 
   // ---- controls ---------------------------------------------------------
 
-  btnOpen.addEventListener('click', () => fileInput.click());
   fileInput.addEventListener('change', () => {
     if (fileInput.files[0]) loadFile(fileInput.files[0]);
     fileInput.value = '';
   });
+
+  // ---- media picker: server files + recent local files + browse ---------
+
+  const hasFSAccess = 'showOpenFilePicker' in window;
+  let serverMedia = []; // [{src, size}] from GET /media
+  let recents = [];     // [{name, handle, usedAt}] from IndexedDB
+
+  const fmtSize = (b) => b >= 1e9 ? (b / 1e9).toFixed(1) + ' GB' : Math.round(b / 1e6) + ' MB';
+
+  function populateMediaSel() {
+    mediaSel.innerHTML = '';
+    mediaSel.append(new Option('Open video…', ''));
+    if (serverMedia.length) {
+      const g = document.createElement('optgroup');
+      g.label = 'Server media';
+      for (const m of serverMedia) g.append(new Option(`${m.src} · ${fmtSize(m.size)}`, 'src:' + m.src));
+      mediaSel.append(g);
+    }
+    if (recents.length) {
+      const g = document.createElement('optgroup');
+      g.label = 'Recent local files';
+      for (const r of recents.slice(0, 8)) g.append(new Option(r.name, 'recent:' + r.name));
+      mediaSel.append(g);
+    }
+    mediaSel.append(new Option('Browse…', 'browse'));
+    mediaSel.value = '';
+  }
+
+  async function refreshServerMedia() {
+    try {
+      const r = await fetch('media'); // relative: works behind path prefixes
+      if (r.ok) { serverMedia = await r.json(); populateMediaSel(); }
+    } catch (e) { /* solo static hosting has no /media — picker still works */ }
+  }
+
+  // Recent local files persist as File System Access handles in IndexedDB
+  // (Chromium). Reopening one asks a one-click read permission per session.
+  function idb() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open('framesync', 1);
+      req.onupgradeneeded = () => req.result.createObjectStore('recents', { keyPath: 'name' });
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function loadRecents() {
+    if (!hasFSAccess) return;
+    try {
+      const db = await idb();
+      recents = await new Promise((resolve, reject) => {
+        const req = db.transaction('recents').objectStore('recents').getAll();
+        req.onsuccess = () => resolve(req.result || []);
+        req.onerror = () => reject(req.error);
+      });
+      recents.sort((a, b) => b.usedAt - a.usedAt);
+      populateMediaSel();
+    } catch (e) { recents = []; }
+  }
+
+  async function rememberRecent(handle) {
+    if (!hasFSAccess || !handle) return;
+    try {
+      const db = await idb();
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction('recents', 'readwrite');
+        const store = tx.objectStore('recents');
+        store.put({ name: handle.name, handle, usedAt: Date.now() });
+        tx.oncomplete = resolve;
+        tx.onerror = () => reject(tx.error);
+      });
+      await loadRecents();
+      if (recents.length > 8) { // trim oldest
+        const db2 = await idb();
+        const tx = db2.transaction('recents', 'readwrite');
+        for (const r of recents.slice(8)) tx.objectStore('recents').delete(r.name);
+      }
+    } catch (e) { /* recents are best-effort */ }
+  }
+
+  async function openLocal() {
+    if (!hasFSAccess) { fileInput.click(); return; }
+    let handle;
+    try {
+      [handle] = await window.showOpenFilePicker({
+        types: [{ description: 'Video', accept: { 'video/*': ['.mp4', '.mov', '.m4v'] } }],
+      });
+    } catch (e) { return; } // cancelled
+    rememberRecent(handle);
+    await loadFile(await handle.getFile());
+  }
+
+  async function openRecent(name) {
+    const rec = recents.find((r) => r.name === name);
+    if (!rec) return;
+    try {
+      let perm = await rec.handle.queryPermission({ mode: 'read' });
+      if (perm !== 'granted') perm = await rec.handle.requestPermission({ mode: 'read' });
+      if (perm !== 'granted') return;
+      rememberRecent(rec.handle);
+      await loadFile(await rec.handle.getFile());
+    } catch (e) {
+      showError(`Could not reopen ${name}: ${e.message || e}`);
+    }
+  }
+
+  mediaSel.addEventListener('pointerdown', () => refreshServerMedia());
+  mediaSel.addEventListener('change', () => {
+    const v = mediaSel.value;
+    mediaSel.value = '';
+    if (v === 'browse') openLocal();
+    else if (v.startsWith('src:')) loadFromUrl(v.slice(4)).catch((e) => showError(String(e.message || e)));
+    else if (v.startsWith('recent:')) openRecent(v.slice(7));
+  });
+
+  refreshServerMedia();
+  loadRecents();
+  populateMediaSel();
 
   btnPlay.addEventListener('click', () => player?.toggle());
   btnBack.addEventListener('click', () => player?.stepBack());
@@ -510,7 +627,15 @@
     stage.addEventListener(ev, (e) => { e.preventDefault(); stage.classList.remove('dragging'); });
   }
   stage.addEventListener('drop', (e) => {
+    // Grab the handle synchronously (dataTransfer dies after the event) so
+    // dropped files land in the recents list; fall back to the plain File.
+    const item = e.dataTransfer.items && e.dataTransfer.items[0];
+    const handlePromise = item && item.getAsFileSystemHandle
+      ? item.getAsFileSystemHandle().catch(() => null) : null;
     const file = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (handlePromise) {
+      handlePromise.then((h) => { if (h && h.kind === 'file') rememberRecent(h); });
+    }
     if (file) loadFile(file);
   });
 

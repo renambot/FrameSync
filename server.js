@@ -117,6 +117,12 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (url.pathname === '/media') {
+    res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-cache' });
+    res.end(JSON.stringify(listMedia(), null, 1));
+    return;
+  }
+
   let p = decodeURIComponent(url.pathname);
   if (p === '/') p = '/index.html';
   const file = path.normalize(path.join(ROOT, p));
@@ -130,6 +136,29 @@ const server = http.createServer((req, res) => {
     res.end(data);
   });
 });
+
+/** Video files under the served root (what the page's picker lists). */
+function listMedia() {
+  const EXT = new Set(['.mp4', '.mov', '.m4v']);
+  const SKIP = new Set(['js', 'docs', 'node_modules']);
+  const out = [];
+  (function scan(dir, rel, depth) {
+    if (depth > 4) return;
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
+    for (const e of entries) {
+      if (e.name.startsWith('.') || SKIP.has(e.name)) continue;
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        scan(full, rel + e.name + '/', depth + 1);
+      } else if (EXT.has(path.extname(e.name).toLowerCase())) {
+        try { out.push({ src: rel + e.name, size: fs.statSync(full).size }); } catch (e2) {}
+      }
+    }
+  })(ROOT, '', 0);
+  out.sort((a, b) => a.src.localeCompare(b.src));
+  return out;
+}
 
 // ---------- WebSocket: /sync ----------
 

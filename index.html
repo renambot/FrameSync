@@ -246,7 +246,7 @@
     outline-offset: 1px;
   }
   #btn-play { min-width: 64px; }
-  #btn-open { margin-left: auto; }
+  #media-sel { margin-left: auto; max-width: 320px; }
   #volume {
     width: 90px;
     appearance: none;
@@ -363,7 +363,9 @@
       <button id="btn-mute" title="Mute / unmute" aria-label="Mute or unmute audio" disabled>🔊</button>
       <input id="volume" type="range" min="0" max="100" value="100"
              title="Volume" aria-label="Volume" disabled>
-      <button id="btn-open">Open video…</button>
+      <select id="media-sel" title="Open a video — server media, recent local files, or browse">
+        <option value="" selected>Open video…</option>
+      </select>
       <input id="file-input" type="file" accept="video/mp4,video/quicktime,.mp4,.mov,.m4v" hidden>
     </div>
   </div>

@@ -46,8 +46,14 @@ two ground-truth test clips are baked into the image (`?src=test/…`). Or
 `./videos`. A `/status`-based healthcheck is built in.
 
 Drop any MP4/MOV (H.264, HEVC*, VP9, AV1 — whatever the browser's decoder
-supports) onto the stage. Requires Chrome/Edge 94+, Safari 16.4+, or
-Firefox 130+.
+supports) onto the stage, or use the **Open video…** picker, which lists
+three sources in one menu: **server media** (every video file under the
+server root — `GET /media` serves the listing; picking one loads by URL, so
+followers auto-load it too), **recent local files** (Chromium: File System
+Access handles persisted in the browser — reopening asks a one-click read
+permission per session; drag-and-dropped files join the list), and
+**Browse…** for the native file picker. Requires Chrome/Edge 94+,
+Safari 16.4+, or Firefox 130+.
 
 ## Why this is frame-exact
 
