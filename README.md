@@ -146,8 +146,9 @@ kiosk launches).
 N lands on physical display row N. Any scaling destroys the effect, so the
 per-eye resolution must match the display's, the page must run fullscreen at
 native resolution, and tiled walls should use `fit=fill` rather than a
-letterboxing fit. The canvas is set to `image-rendering: pixelated` while a
-stereo filter is active so residual scaling cannot blend adjacent eye rows.
+letterboxing fit. The canvas is set to `image-rendering: pixelated` while
+the interlace is active so residual scaling cannot blend adjacent eye rows;
+the other stereo modes leave it off, since they want smooth scaling.
 
 ## Audio and the clock hierarchy
 
@@ -403,10 +404,11 @@ box=1:boxcolor=black@0.7:boxborderw=20" \
   index and media time are always exact regardless.
 - HEVC support depends on platform decoders (Safari yes; Chrome only where
   the OS provides it).
-- Stereo sources must be **side-by-side** (over/under and frame-packed
-  layouts are not handled), and the whole double-wide frame is decoded on
-  every node — beyond roughly 8192 px wide, hardware decoders refuse the
-  stream, so split per-eye files and sync them instead.
+- Stereo sources must be frame-packed in one of the three layouts above
+  (anything else — interleaved-per-frame, MVC, separate tracks — is not
+  handled), and the whole packed frame is decoded on every node even when
+  only one eye is shown. Beyond roughly 8192 px in either axis hardware
+  decoders refuse the stream, so split per-eye files and sync them instead.
 - The Dubois anaglyph uses one published sRGB coefficient set applied in
   gamma-encoded space (as the reference implementations do); several
   calibrations exist for different display primaries and glasses. Identical
