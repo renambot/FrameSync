@@ -180,10 +180,11 @@ class FramePlayer {
    * bars align exactly across the wall.
    */
   _draw(frame) {
-    const W = frame.displayWidth, H = frame.displayHeight;
-    // The filter stage returns a same-sized drawable (or null to bypass),
-    // so all geometry below applies unchanged.
+    // The filter stage may hand back a drawable of different dimensions —
+    // the stereo interlace halves the width — so all geometry below follows
+    // what is actually being drawn, not the decoded frame.
     const src = this.filterFn ? (this.filterFn(frame) || frame) : frame;
+    const W = src.displayWidth || src.width, H = src.displayHeight || src.height;
     const v = this.viewport;
 
     if (v && this.fitMode === 'contain') {

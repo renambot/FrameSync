@@ -30,6 +30,7 @@
   let loopOn = false;
   const filterSel = $('filter-sel');
   const filterAmt = $('filter-amt');
+  const btnSwapEyes = $('btn-swap-eyes');
 
   const slider = $('scrubber');
   const gopCanvas = $('gop-strip');
@@ -331,14 +332,17 @@
       src: loadedSrc,
       filter: filterName,
       famount: filterAmount,
+      swapeyes: swapEyes,
     });
   }
 
   async function applyState(s) {
     lastMasterState = s;
-    if (s.filter !== undefined && (s.filter !== filterName || (s.famount ?? 1) !== filterAmount)) {
+    if (s.filter !== undefined && (s.filter !== filterName
+        || (s.famount ?? 1) !== filterAmount || Boolean(s.swapeyes) !== swapEyes)) {
       filterName = s.filter || 'none';
       filterAmount = s.famount ?? 1;
+      swapEyes = Boolean(s.swapeyes);
       applyFilter();
     }
     if (s.src && s.src !== loadedSrc) {
@@ -365,6 +369,7 @@
     if (gpuFilter) { // follower filters come from the master
       filterSel.disabled = follower;
       filterAmt.disabled = follower;
+      btnSwapEyes.disabled = follower;
     }
   }
 
@@ -518,10 +523,15 @@
 
   // ---- GPU filters (WebGPU) ----------------------------------------------
 
-  const FILTER_IDS = { none: 0, grayscale: 1, sepia: 2, invert: 3, brightness: 4, contrast: 5, saturation: 6, hue: 7, sharpen: 8, swirl: 9 };
+  const FILTER_IDS = { none: 0, grayscale: 1, sepia: 2, invert: 3, swirl: 4, stereo: 5, 'stereo-half': 6, anaglyph: 7, 'anaglyph-half': 8 };
+  // Stereo filters take a side-by-side source, so they all offer eye swap.
+  // Only the interlace needs pixel-exact rows; anaglyph tolerates scaling
+  // and uses the amount slider as colour-to-grey mix.
+  const STEREO_KIND = { stereo: 'interlace', 'stereo-half': 'interlace', anaglyph: 'anaglyph', 'anaglyph-half': 'anaglyph' };
   let gpuFilter = null;
   let filterName = 'none';
   let filterAmount = 1;
+  let swapEyes = false;
 
   (async () => {
     if (!GPUFilter.supported) { disableFilterUI('WebGPU not available in this browser'); return; }
@@ -535,6 +545,7 @@
   function disableFilterUI(why) {
     filterSel.disabled = true;
     filterAmt.disabled = true;
+    btnSwapEyes.disabled = true;
     filterSel.title = why;
   }
 
@@ -542,9 +553,18 @@
   function applyFilter() {
     filterSel.value = filterName;
     filterAmt.value = String(Math.round(filterAmount * 100));
+    const kind = STEREO_KIND[filterName] || null;
+    btnSwapEyes.hidden = !kind;
+    btnSwapEyes.classList.toggle('active', swapEyes);
+    btnSwapEyes.setAttribute('aria-pressed', String(swapEyes));
+    filterAmt.hidden = kind === 'interlace'; // no meaning for row interleave
+    filterAmt.title = kind === 'anaglyph'
+      ? 'Colour retention (0% = grey anaglyph, least ghosting)'
+      : 'Filter amount (100% = natural strength)';
+    canvas.classList.toggle('stereo', kind === 'interlace');
     if (!player) return;
     if (gpuFilter && filterName !== 'none' && FILTER_IDS[filterName]) {
-      gpuFilter.set(FILTER_IDS[filterName], filterAmount);
+      gpuFilter.set(FILTER_IDS[filterName], filterAmount, swapEyes);
       player.filterFn = (f) => gpuFilter.apply(f);
     } else {
       player.filterFn = null;
@@ -561,6 +581,11 @@
     filterAmount = Number(filterAmt.value) / 100;
     applyFilter();
     broadcastNow();
+  });
+  btnSwapEyes.addEventListener('click', () => {
+    swapEyes = !swapEyes;
+    applyFilter();
+    broadcastNow(true);
   });
 
   function setLoop(on) {
@@ -750,6 +775,7 @@
   if (paramFilter && paramFilter in FILTER_IDS) {
     filterName = paramFilter;
     filterAmount = Number(params.get('famount') || 1) || 1;
+    swapEyes = params.has('swapeyes');
     applyFilter();
   }
   const paramSrc = params.get('src');

@@ -79,17 +79,48 @@ the file — the real random-access structure that determines seek cost.
 ## GPU filters (WebGPU)
 
 The filter dropdown applies a WGSL shader to every frame — grayscale, sepia,
-invert, brightness, contrast, saturation, hue rotate, sharpen, and swirl (a
-coordinate warp: the image rotates around the centre with a smooth radial
-falloff) — with an amount slider (100 % = the filter's natural strength;
-gain filters like brightness/contrast are neutral at 100 %, and swirl turns
-a half-rotation at the centre). The pipeline is zero-copy: each
-decoded `VideoFrame` is imported as a `GPUExternalTexture` (no readback, no
-upload), filtered into an offscreen canvas, and blitted by the normal draw
-path, so filters compose with tiling, contain fit, and fullscreen unchanged.
+invert, and swirl (a coordinate warp: the image rotates around the centre
+with a smooth radial falloff) — with an amount slider (100 % = the filter's
+natural strength; swirl turns a half-rotation at the centre). The pipeline is
+zero-copy: each decoded `VideoFrame` is imported as a `GPUExternalTexture`
+(no readback, no upload), filtered into an offscreen canvas, and blitted by
+the normal draw path, so filters compose with tiling, contain fit, and
+fullscreen unchanged.
 The filter is part of the synced state: setting it on the master applies it
 to every follower. Without WebGPU the controls disable and playback is
 unfiltered.
+
+### Stereo 3D
+
+Four entries consume a **double-wide side-by-side** frame (left eye beside
+right eye). All four offer the ⇄ **swap eyes** button, for displays whose
+polarization phase — or glasses whose colours — run the other way round.
+Each comes in two variants: **(side-by-side)** for full SBS, where each half
+is already the eye's native width (output is half the frame width, mapped
+1:1), and **(half side-by-side)** for HSBS, where each half is squeezed 2×
+(output is the full frame width, un-squeezing each eye).
+
+- **3D interlace** — row-interleaved for passive 3D displays: **even rows
+  from the left eye, odd rows from the right**, each sampled at the same
+  vertical position so the eyes stay aligned. The amount slider is hidden
+  (it has no meaning here).
+- **3D anaglyph** — red/cyan for anaglyph glasses: the red channel comes
+  from the left eye, green and blue from the right. Here the amount slider
+  sets **colour retention**: 100 % is a full-colour anaglyph, 0 % a grey
+  anaglyph, which loses colour but greatly reduces ghosting and retinal
+  rivalry. Anaglyph needs no pixel alignment, so it scales and letterboxes
+  freely, unlike the interlace.
+
+Stereo runs before the crop/fit stage, so it composes with tiling — and the
+filter choice and eye swap both ride in the synced state, so one master
+drives a whole 3D wall (`?filter=stereo&swapeyes` for kiosk launches).
+
+**Pixel alignment is everything for the interlace**: interleaving only works if output row
+N lands on physical display row N. Any scaling destroys the effect, so the
+per-eye resolution must match the display's, the page must run fullscreen at
+native resolution, and tiled walls should use `fit=fill` rather than a
+letterboxing fit. The canvas is set to `image-rendering: pixelated` while a
+stereo filter is active so residual scaling cannot blend adjacent eye rows.
 
 ## Audio and the clock hierarchy
 
@@ -178,7 +209,8 @@ identical frame (error 0.0 ms).
 | `loop` | loop at end of file |
 | `fullscreen` (or `fs`) | stage fullscreen — video only, cursor hidden |
 | `screen=N` | display index fullscreen targets (Window Management API) |
-| `filter=name` + `famount=1.0` | GPU filter at load (grayscale, sepia, invert, brightness, contrast, saturation, hue, sharpen, swirl) |
+| `filter=name` + `famount=1.0` | GPU filter at load (grayscale, sepia, invert, swirl, stereo, stereo-half, anaglyph, anaglyph-half) |
+| `swapeyes` | start the stereo interlace with the eyes swapped |
 | `tile=col,row,cols,rows` | show one grid slice of the wall (tiled mode) |
 | `crop=x,y,w,h` | show an arbitrary normalized rect (bezel compensation) |
 | `fit=contain` / `fit=fill` | aspect-fit the video into the wall (default with `tile`) vs stretch the slice |
@@ -306,6 +338,9 @@ box=1:boxcolor=black@0.7:boxborderw=20" \
 | Go to frame + Enter | jump to an exact frame index |
 | 🔁 / L | loop at end of file |
 | ⛶ / F | fullscreen (stage only) |
+| filter dropdown | GPU filter (grayscale, sepia, invert, swirl, stereo 3D) |
+| amount slider | filter strength — colour retention for anaglyph |
+| ⇄ | swap left/right eye (stereo filters) |
 
 ## Files
 
@@ -315,6 +350,7 @@ box=1:boxcolor=black@0.7:boxborderw=20" \
 - `js/demuxer.js` — MP4Box wrapper → decoder configs + sample tables (video + audio)
 - `js/player.js` — `FramePlayer`: decode pipeline, clock hierarchy, seek/step logic
 - `js/audio.js` — `AudioEngine`: AudioDecoder → sample-accurate Web Audio scheduling
+- `js/gpufilter.js` — `GPUFilter`: WebGPU/WGSL filter stage, incl. stereo 3D
 - `js/syncclient.js` — `SyncClient`: NTP-style shared clock + state exchange
 - `js/main.js` — UI wiring, GOP strip, keyboard transport, sync roles
 

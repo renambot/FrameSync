@@ -106,6 +106,8 @@
     overflow: hidden;
   }
   #stage.dragging { border-color: var(--amber); }
+  /* Interlaced stereo must never blur row-to-row: keep scaling hard-edged. */
+  #screen.stereo { image-rendering: pixelated; }
   #stage:fullscreen {
     border: none;
     border-radius: 0;
@@ -373,15 +375,16 @@
         <option value="grayscale">grayscale</option>
         <option value="sepia">sepia</option>
         <option value="invert">invert</option>
-        <option value="brightness">brightness</option>
-        <option value="contrast">contrast</option>
-        <option value="saturation">saturation</option>
-        <option value="hue">hue</option>
-        <option value="sharpen">sharpen</option>
         <option value="swirl">swirl</option>
+        <option value="stereo">3D interlace (side-by-side)</option>
+        <option value="stereo-half">3D interlace (half side-by-side)</option>
+        <option value="anaglyph">3D anaglyph (side-by-side)</option>
+        <option value="anaglyph-half">3D anaglyph (half side-by-side)</option>
       </select>
       <input id="filter-amt" type="range" min="0" max="200" value="100"
              title="Filter amount (100% = natural strength)" aria-label="Filter amount">
+      <button id="btn-swap-eyes" title="Swap left/right eye" aria-label="Swap left and right eye"
+              aria-pressed="false" hidden>⇄</button>
     </div>
   </div>
 

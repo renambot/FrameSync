@@ -17,6 +17,7 @@ class GPUFilter {
     this.ready = false;
     this.mode = 0;
     this.amount = 1;
+    this.swapEyes = false;
   }
 
   static get supported() { return 'gpu' in navigator; }
@@ -44,12 +45,12 @@ class GPUFilter {
       this.bgl = this.pipeline.getBindGroupLayout(0);
       this.sampler = this.device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
       this.ubuf = this.device.createBuffer({
-        size: 16,
+        size: 32,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       });
-      this.uarr = new ArrayBuffer(16);
-      this.uu32 = new Uint32Array(this.uarr, 0, 1);
-      this.uf32 = new Float32Array(this.uarr, 4, 3);
+      this.uarr = new ArrayBuffer(32);
+      this.uu32 = new Uint32Array(this.uarr); // [0] mode, [4] swap
+      this.uf32 = new Float32Array(this.uarr); // [1] amount, [2] w, [3] h
 
       this.ready = true;
       return true;
@@ -60,24 +61,39 @@ class GPUFilter {
   }
 
   /** mode: index into the shader's filter switch (0 = none). amount: 0..2. */
-  set(mode, amount) {
+  set(mode, amount, swapEyes = false) {
     this.mode = mode | 0;
     this.amount = amount;
+    this.swapEyes = Boolean(swapEyes);
+  }
+
+  /**
+   * Output size for a mode. The stereo interlace consumes a double-wide
+   * side-by-side frame and emits a single eye-width image (modes 5, 7), or
+   * un-squeezes a half-SBS frame across the full width (modes 6, 8).
+   */
+  outputSize(frame) {
+    const w = frame.displayWidth, h = frame.displayHeight;
+    // Full-SBS stereo modes emit one eye's width; half-SBS modes un-squeeze
+    // across the full width, as do all the mono filters.
+    const halves = this.mode === 5 || this.mode === 7;
+    return halves ? { w: Math.max(1, w >> 1), h } : { w, h };
   }
 
   /** Filter one frame; returns the drawable canvas, or null to bypass. */
   apply(frame) {
     if (!this.ready || this.mode === 0) return null;
-    const w = frame.displayWidth, h = frame.displayHeight;
+    const { w, h } = this.outputSize(frame);
     if (this.canvas.width !== w || this.canvas.height !== h) {
       this.canvas.width = w;
       this.canvas.height = h;
     }
     try {
       this.uu32[0] = this.mode;
-      this.uf32[0] = this.amount;
-      this.uf32[1] = w;
-      this.uf32[2] = h;
+      this.uu32[4] = this.swapEyes ? 1 : 0;
+      this.uf32[1] = this.amount;
+      this.uf32[2] = w;   // output dimensions: the shader works in output space
+      this.uf32[3] = h;
       this.device.queue.writeBuffer(this.ubuf, 0, this.uarr);
 
       const ext = this.device.importExternalTexture({ source: frame });
@@ -113,7 +129,7 @@ class GPUFilter {
 }
 
 GPUFilter.WGSL = /* wgsl */`
-struct Params { mode: u32, amount: f32, w: f32, h: f32 };
+struct Params { mode: u32, amount: f32, w: f32, h: f32, swap: u32 };
 @group(0) @binding(0) var samp: sampler;
 @group(0) @binding(1) var tex: texture_external;
 @group(0) @binding(2) var<uniform> P: Params;
@@ -130,8 +146,40 @@ const LUMA = vec3f(0.2126, 0.7152, 0.0722);
   var uv = fragCoord.xy / vec2f(P.w, P.h);
   let a = P.amount;
 
+  // Stereo row interleave (5 = SBS, 6 = half-SBS): even output rows come
+  // from the left half of the frame, odd rows from the right half, sampled
+  // at the same vertical position so the eyes stay aligned. P.w is the
+  // output width, so fragCoord.x/P.w spans exactly one eye either way:
+  // mode 5 maps 1:1 (eye-width output), mode 6 stretches the squeezed
+  // half-SBS eye back across the full width.
+  if (P.mode == 5u || P.mode == 6u) {
+    let odd = (u32(fragCoord.y) & 1u) == 1u;
+    let swapped = P.swap != 0u;
+    var off = 0.0;
+    if (odd != swapped) { off = 0.5; }
+    let su = fragCoord.x / P.w * 0.5 + off;
+    return vec4f(textureSampleBaseClampToEdge(tex, samp, vec2f(su, uv.y)).rgb, 1.0);
+  }
+
+  // Anaglyph (7 = SBS, 8 = half-SBS): red channel from the left eye,
+  // green+blue from the right, for red/cyan glasses. amount fades colour
+  // out to a grey anaglyph, which trades colour fidelity for much less
+  // retinal rivalry and ghosting.
+  if (P.mode == 7u || P.mode == 8u) {
+    let u = fragCoord.x / P.w * 0.5;
+    var lu = u;
+    var ru = u + 0.5;
+    if (P.swap != 0u) { lu = u + 0.5; ru = u; }
+    let L = textureSampleBaseClampToEdge(tex, samp, vec2f(lu, uv.y)).rgb;
+    let R = textureSampleBaseClampToEdge(tex, samp, vec2f(ru, uv.y)).rgb;
+    let mixAmt = clamp(a, 0.0, 1.0);
+    let Lc = mix(vec3f(dot(L, LUMA)), L, mixAmt);
+    let Rc = mix(vec3f(dot(R, LUMA)), R, mixAmt);
+    return vec4f(Lc.r, Rc.g, Rc.b, 1.0);
+  }
+
   // Geometry filters warp the sample coordinate before any color work.
-  if (P.mode == 9u) { // swirl: rotate around the centre, falling off with radius
+  if (P.mode == 4u) { // swirl: rotate around the centre, falling off with radius
     let aspect = P.w / P.h;
     var d = (uv - vec2f(0.5)) * vec2f(aspect, 1.0); // circular, not elliptical
     let r = length(d);
@@ -161,32 +209,7 @@ const LUMA = vec3f(0.2126, 0.7152, 0.0722);
     case 3u: { // invert
       c = mix(c, vec3f(1.0) - c, clamp(a, 0.0, 1.0));
     }
-    case 4u: { // brightness (1.0 = neutral)
-      c = c * a;
-    }
-    case 5u: { // contrast (1.0 = neutral)
-      c = (c - 0.5) * a + 0.5;
-    }
-    case 6u: { // saturation (1.0 = neutral)
-      c = mix(vec3f(dot(c, LUMA)), c, a);
-    }
-    case 7u: { // hue rotate (amount 0..2 -> 0..360 degrees)
-      let ang = a * 3.14159265;
-      let cA = cos(ang); let sA = sin(ang);
-      let r0 = vec3f(0.213 + cA * 0.787 - sA * 0.213, 0.715 - cA * 0.715 - sA * 0.715, 0.072 - cA * 0.072 + sA * 0.928);
-      let r1 = vec3f(0.213 - cA * 0.213 + sA * 0.143, 0.715 + cA * 0.285 + sA * 0.140, 0.072 - cA * 0.072 - sA * 0.283);
-      let r2 = vec3f(0.213 - cA * 0.213 - sA * 0.787, 0.715 - cA * 0.715 + sA * 0.715, 0.072 + cA * 0.928 + sA * 0.072);
-      c = vec3f(dot(r0, c), dot(r1, c), dot(r2, c));
-    }
-    case 8u: { // sharpen (unsharp mask, amount = strength)
-      let px = vec2f(1.0, 1.0) / vec2f(P.w, P.h);
-      let n = textureSampleBaseClampToEdge(tex, samp, uv + vec2f(0.0, -px.y)).rgb
-            + textureSampleBaseClampToEdge(tex, samp, uv + vec2f(0.0, px.y)).rgb
-            + textureSampleBaseClampToEdge(tex, samp, uv + vec2f(-px.x, 0.0)).rgb
-            + textureSampleBaseClampToEdge(tex, samp, uv + vec2f(px.x, 0.0)).rgb;
-      c = c * (1.0 + 4.0 * a) - n * a;
-    }
-    // case 9u (swirl) is handled above as a coordinate warp.
+    // case 4u (swirl) and the stereo modes are handled above.
     default: {}
   }
   return vec4f(clamp(c, vec3f(0.0), vec3f(1.0)), 1.0);
