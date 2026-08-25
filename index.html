@@ -423,7 +423,11 @@
         <option value="tb">top/bottom</option>
       </select>
       <label class="goto" id="conv-wrap" hidden>conv
-        <input id="stereo-conv" type="number" min="-400" max="400" step="1" value="0"
+        <!-- No min/max here: the real bound is a tenth of the eye's width,
+             which depends on the file and the layout, so applyFilter() sets
+             both once a file is loaded. Hard-coding a placeholder would only
+             advertise a limit the code does not enforce. -->
+        <input id="stereo-conv" type="number" step="1" value="0"
                title="Convergence: horizontal shift between the eyes, in pixels of total separation"
                aria-label="Stereo convergence in pixels">
       </label>

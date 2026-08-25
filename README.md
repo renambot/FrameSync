@@ -24,6 +24,10 @@ modern low-level web media stack:
   side-by-side or top/bottom sources — row-interleaved, anaglyph, single-eye,
   and an L−R difference view — with adjustable convergence.
 
+<p align="center">
+  <img src="docs/screenshot.jpg" alt="FrameSync as master, playing a 3840x4320 top/bottom stereo file as a black-and-white red/cyan anaglyph: frame 6611 of 38071, timecode 00:01:50:11, a green loop range marked on the keyframe strip, and the filter, stereo layout and convergence controls along the bottom" width="720">
+</p>
+
 ## Run it
 
 ```sh
@@ -148,6 +152,16 @@ clamped inside each eye's own half of the packed frame, so a large shift
 smears that eye's edge rather than dragging in the neighbouring eye's pixels.
 That does mean an extreme value costs you a strip at one edge — real
 convergence corrections are a fraction of a percent of the width.
+
+The control is capped at **a tenth of the eye's width**, which the field
+advertises and enforces, and which therefore moves with the source and the
+layout: a 1280-wide side-by-side pair has 640-wide eyes and a ±64 px range,
+while the same file read as top/bottom has full-width eyes and ±128. An
+absolute pixel bound would mean nothing across a fleet — 400 px is a fifth of
+a 1080p eye and 3 % of an 8K one. Values arriving from `?sconv=` or from a
+master's anchor are put through the same cap, and anything non-finite becomes
+0, so nothing unusable reaches the stored state, the synced tuple, or a
+launch URL.
 
 Pair it with the **difference** view to set it objectively: pick a feature
 that should sit at screen depth and shift until its fringes go black. `conv`
@@ -400,10 +414,6 @@ scope movie with narrower bars, true 32:9 content edge-to-edge with none.
 Add `fit=fill` to stretch instead.
 
 ## Verify it yourself
-
-<p align="center">
-  <img src="docs/screenshot.jpg" alt="FrameSync playing the ground-truth clip: the burned-in FRAME 124 matches the readout — frame 124/299, timecode 00:00:04:04, media time 4.133 s — above the keyframe strip and transport controls" width="720">
-</p>
 
 `test/frames-30fps.mp4` is a 300-frame, 30 fps H.264 clip (GOP 60, B-frames)
 with the frame number burned into every frame. Load it, scrub anywhere, step

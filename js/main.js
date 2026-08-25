@@ -416,11 +416,11 @@
     if (s.filter !== undefined && (s.filter !== filterName
         || Boolean(s.swapeyes) !== swapEyes
         || (s.slayout || 'sbs') !== stereoLayout
-        || (s.sconv || 0) !== stereoConv)) {
+        || finiteConv(s.sconv) !== stereoConv)) {
       filterName = s.filter || 'none';
       swapEyes = Boolean(s.swapeyes);
       stereoLayout = s.slayout || 'sbs';
-      stereoConv = s.sconv || 0;
+      stereoConv = finiteConv(s.sconv);
       applyFilter();
     }
     if (s.src && s.src !== loadedSrc) {
@@ -658,6 +658,17 @@
   let swapEyes = false;
   let stereoLayout = 'sbs';
   let stereoConv = 0; // horizontal image translation, px of total separation
+  // A convergence value can arrive from the UI, a URL, or a master's anchor.
+  // Only the first of those is a control we own, so normalise at every entry:
+  // Number('1e999') and Number('Infinity') are both Infinity, which the
+  // shader survives but which has no business in stored state, a synced
+  // tuple, or a launch URL.
+  const finiteConv = (v) => (Number.isFinite(v) ? v : 0);
+  // Cap relative to the eye's own width. An absolute pixel bound is
+  // meaningless on a wall: 400 px is a fifth of a 1080p eye and 3 % of an 8K
+  // one. A tenth of the eye is already far past any real correction (those
+  // run under 2 %), and it means the same thing at every resolution.
+  const CONV_FRACTION = 0.1;
 
   (async () => {
     if (!GPUFilter.supported) { disableFilterUI('WebGPU not available in this browser'); return; }
@@ -688,6 +699,17 @@
     const kind = STEREO_KIND[filterName] || null;
     stereoLayoutSel.value = stereoLayout;
     stereoLayoutSel.hidden = !kind;
+    // The eye is half the frame only when the pair is packed across x at
+    // full width; half-SBS and top/bottom each give the eye the full width.
+    const eyeW = meta ? (stereoLayout === 'sbs' ? meta.info.width / 2 : meta.info.width) : 0;
+    const convMax = eyeW ? Math.max(1, Math.round(eyeW * CONV_FRACTION)) : 0;
+    if (convMax) {
+      stereoConv = Math.max(-convMax, Math.min(convMax, finiteConv(stereoConv)));
+      convInput.min = String(-convMax);
+      convInput.max = String(convMax);
+      convInput.title =
+        `Convergence: horizontal shift between the eyes, in pixels of total separation (±${convMax})`;
+    }
     convInput.value = String(stereoConv);
     // Convergence moves the eyes relative to each other, which needs both of
     // them on screen — for a single-eye view it would just pan the picture.
@@ -722,9 +744,8 @@
   // 'input' so dragging the spinner or holding a key tracks live; the
   // broadcast is rate-limited, as with any continuous control.
   convInput.addEventListener('input', () => {
-    const v = Number(convInput.value);
-    stereoConv = Number.isFinite(v) ? v : 0;
-    applyFilter();
+    stereoConv = finiteConv(Number(convInput.value));
+    applyFilter(); // clamps to the eye-relative cap and writes the value back
     broadcastNow();
   });
   btnSwapEyes.addEventListener('click', () => {
@@ -1076,7 +1097,7 @@
   if (paramFilter && paramFilter in FILTER_IDS) {
     filterName = paramFilter;
     swapEyes = params.has('swapeyes');
-    stereoConv = Number(params.get('sconv')) || 0;
+    stereoConv = finiteConv(Number(params.get('sconv')));
     applyFilter();
   }
   const paramSrc = params.get('src');
