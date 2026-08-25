@@ -127,9 +127,26 @@ struct Params { mode: u32, amount: f32, w: f32, h: f32 };
 const LUMA = vec3f(0.2126, 0.7152, 0.0722);
 
 @fragment fn fs(@builtin(position) fragCoord: vec4f) -> @location(0) vec4f {
-  let uv = fragCoord.xy / vec2f(P.w, P.h);
-  var c = textureSampleBaseClampToEdge(tex, samp, uv).rgb;
+  var uv = fragCoord.xy / vec2f(P.w, P.h);
   let a = P.amount;
+
+  // Geometry filters warp the sample coordinate before any color work.
+  if (P.mode == 9u) { // swirl: rotate around the centre, falling off with radius
+    let aspect = P.w / P.h;
+    var d = (uv - vec2f(0.5)) * vec2f(aspect, 1.0); // circular, not elliptical
+    let r = length(d);
+    let radius = 0.5;
+    if (r < radius) {
+      // Smooth falloff so the swirl blends into the untouched surround.
+      let t = 1.0 - r / radius;
+      let ang = a * 3.14159265 * t * t;
+      let cA = cos(ang); let sA = sin(ang);
+      d = vec2f(d.x * cA - d.y * sA, d.x * sA + d.y * cA);
+      uv = d / vec2f(aspect, 1.0) + vec2f(0.5);
+    }
+  }
+
+  var c = textureSampleBaseClampToEdge(tex, samp, uv).rgb;
   switch P.mode {
     case 1u: { // grayscale
       c = mix(c, vec3f(dot(c, LUMA)), clamp(a, 0.0, 1.0));
@@ -169,6 +186,7 @@ const LUMA = vec3f(0.2126, 0.7152, 0.0722);
             + textureSampleBaseClampToEdge(tex, samp, uv + vec2f(px.x, 0.0)).rgb;
       c = c * (1.0 + 4.0 * a) - n * a;
     }
+    // case 9u (swirl) is handled above as a coordinate warp.
     default: {}
   }
   return vec4f(clamp(c, vec3f(0.0), vec3f(1.0)), 1.0);

@@ -79,9 +79,11 @@ the file — the real random-access structure that determines seek cost.
 ## GPU filters (WebGPU)
 
 The filter dropdown applies a WGSL shader to every frame — grayscale, sepia,
-invert, brightness, contrast, saturation, hue rotate, sharpen — with an
-amount slider (100 % = the filter's natural strength; gain filters like
-brightness/contrast are neutral at 100 %). The pipeline is zero-copy: each
+invert, brightness, contrast, saturation, hue rotate, sharpen, and swirl (a
+coordinate warp: the image rotates around the centre with a smooth radial
+falloff) — with an amount slider (100 % = the filter's natural strength;
+gain filters like brightness/contrast are neutral at 100 %, and swirl turns
+a half-rotation at the centre). The pipeline is zero-copy: each
 decoded `VideoFrame` is imported as a `GPUExternalTexture` (no readback, no
 upload), filtered into an offscreen canvas, and blitted by the normal draw
 path, so filters compose with tiling, contain fit, and fullscreen unchanged.
@@ -176,7 +178,7 @@ identical frame (error 0.0 ms).
 | `loop` | loop at end of file |
 | `fullscreen` (or `fs`) | stage fullscreen — video only, cursor hidden |
 | `screen=N` | display index fullscreen targets (Window Management API) |
-| `filter=name` + `famount=1.0` | GPU filter at load (grayscale, sepia, invert, brightness, contrast, saturation, hue, sharpen) |
+| `filter=name` + `famount=1.0` | GPU filter at load (grayscale, sepia, invert, brightness, contrast, saturation, hue, sharpen, swirl) |
 | `tile=col,row,cols,rows` | show one grid slice of the wall (tiled mode) |
 | `crop=x,y,w,h` | show an arbitrary normalized rect (bezel compensation) |
 | `fit=contain` / `fit=fill` | aspect-fit the video into the wall (default with `tile`) vs stretch the slice |

@@ -518,7 +518,7 @@
 
   // ---- GPU filters (WebGPU) ----------------------------------------------
 
-  const FILTER_IDS = { none: 0, grayscale: 1, sepia: 2, invert: 3, brightness: 4, contrast: 5, saturation: 6, hue: 7, sharpen: 8 };
+  const FILTER_IDS = { none: 0, grayscale: 1, sepia: 2, invert: 3, brightness: 4, contrast: 5, saturation: 6, hue: 7, sharpen: 8, swirl: 9 };
   let gpuFilter = null;
   let filterName = 'none';
   let filterAmount = 1;
