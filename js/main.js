@@ -342,7 +342,7 @@
     if (!player || !player.frameCount || adopting) return;
     adopting = true;
     try {
-      const playing = s.playing && s.rate > 0;
+      const playing = s.playing && s.rate !== 0;
       const nowUs = playing
         ? s.mediaTimeUs + (sync.sharedNowUs() - s.atSharedUs) * s.rate
         : s.mediaTimeUs;
@@ -428,7 +428,7 @@
       return; // loadBuffer re-applies lastMasterState once loaded
     }
     if (!player || !player.frameCount || !sync) return;
-    if (s.playing && s.rate > 0) {
+    if (s.playing && s.rate !== 0) {
       player.followExternal(() =>
         s.mediaTimeUs + (sync.sharedNowUs() - s.atSharedUs) * s.rate);
     } else {
@@ -450,12 +450,7 @@
                       slider, rateSel, frameGoto, btnLoop, btnIn, btnOut, btnClearRange]) {
       el.disabled = follower || !haveVideo;
     }
-    if (gpuFilter) { // follower filters come from the master
-      filterSel.disabled = follower;
-      stereoLayoutSel.disabled = follower;
-      convInput.disabled = follower;
-      btnSwapEyes.disabled = follower;
-    }
+    syncFilterControls(); // follower filters come from the master
   }
 
   /** The header's one-line sync readout: role, RTT, and follower error. */
@@ -637,6 +632,7 @@
     none: 0, grayscale: 1, sepia: 2, invert: 3, swirl: 4,
     stereo: 5, anaglyph: 6, 'anaglyph-dubois': 7,
     'left-eye': 8, 'right-eye': 9, difference: 10,
+    'side-by-side': 11, 'side-by-side-squished': 12,
   };
   // Stereo filters read a packed eye pair, so they all take the layout menu
   // and the eye swap, and none use the amount slider. Only the interlace
@@ -645,6 +641,7 @@
   const STEREO_KIND = {
     stereo: 'interlace', anaglyph: 'anaglyph', 'anaglyph-dubois': 'anaglyph',
     'left-eye': 'eye', 'right-eye': 'eye', difference: 'diff',
+    'side-by-side': 'sbs-out', 'side-by-side-squished': 'sbs-out',
   };
   // How the source packs the pair — orthogonal to the technique above, which
   // is why it is its own menu rather than a filter per combination.
@@ -658,6 +655,7 @@
   let swapEyes = false;
   let stereoLayout = 'sbs';
   let stereoConv = 0; // horizontal image translation, px of total separation
+  let filterUIBlocked = null; // reason the whole filter UI is unusable, or null
   // A convergence value can arrive from the UI, a URL, or a master's anchor.
   // Only the first of those is a control we own, so normalise at every entry:
   // Number('1e999') and Number('Infinity') are both Infinity, which the
@@ -681,11 +679,31 @@
 
   /** No usable WebGPU: grey the filter controls out and say so in the tooltip. */
   function disableFilterUI(why) {
-    filterSel.disabled = true;
-    stereoLayoutSel.disabled = true;
-    convInput.disabled = true;
-    btnSwapEyes.disabled = true;
+    filterUIBlocked = why;
     filterSel.title = why;
+    syncFilterControls();
+  }
+
+  /**
+   * Enable exactly the stereo controls the current filter can use, and keep
+   * them present the whole time — a control that vanishes moves everything
+   * beside it, so the row would reshuffle on every filter change.
+   *
+   * The single owner of these four `disabled` flags. Three unrelated things
+   * decide them — whether the filter uses the control, whether this page is a
+   * follower, and whether WebGPU exists at all — and each used to write them
+   * directly, so whichever ran last won and the other two were forgotten.
+   */
+  function syncFilterControls() {
+    const kind = STEREO_KIND[filterName] || null;
+    // Convergence moves the eyes relative to each other, which needs both of
+    // them on screen — for a single-eye view it would just pan the picture.
+    // And |L-R| is symmetric, so eye swap cannot change the difference view.
+    const blocked = Boolean(filterUIBlocked) || role === 'follower';
+    filterSel.disabled = blocked;
+    stereoLayoutSel.disabled = blocked || !kind;
+    convInput.disabled = blocked || !kind || kind === 'eye';
+    btnSwapEyes.disabled = blocked || !kind || kind === 'diff';
   }
 
   /**
@@ -698,7 +716,6 @@
     filterSel.value = filterName;
     const kind = STEREO_KIND[filterName] || null;
     stereoLayoutSel.value = stereoLayout;
-    stereoLayoutSel.hidden = !kind;
     // The eye is half the frame only when the pair is packed across x at
     // full width; half-SBS and top/bottom each give the eye the full width.
     const eyeW = meta ? (stereoLayout === 'sbs' ? meta.info.width / 2 : meta.info.width) : 0;
@@ -711,12 +728,7 @@
         `Convergence: horizontal shift between the eyes, in pixels of total separation (±${convMax})`;
     }
     convInput.value = String(stereoConv);
-    // Convergence moves the eyes relative to each other, which needs both of
-    // them on screen — for a single-eye view it would just pan the picture.
-    convWrap.hidden = !kind || kind === 'eye';
-    // |L-R| is symmetric, so the difference view is the one stereo mode eye
-    // swap cannot change — offering the button there would be a dead control.
-    btnSwapEyes.hidden = !kind || kind === 'diff';
+    syncFilterControls();
     btnSwapEyes.classList.toggle('active', swapEyes);
     btnSwapEyes.setAttribute('aria-pressed', String(swapEyes));
     canvas.classList.toggle('stereo', kind === 'interlace');
@@ -933,6 +945,22 @@
   });
 
   roleSel.addEventListener('change', () => setRole(roleSel.value));
+
+  // A control that keeps focus swallows the transport keys, by design — so
+  // choosing a filter with the mouse would leave Space changing the dropdown
+  // instead of playing. Hand focus back to the stage once a menu has been
+  // used, but only when a pointer drove it: arrowing through a select fires
+  // `change` on every step, and blurring there would eject a keyboard user
+  // mid-navigation.
+  let pointerDroveInput = false;
+  window.addEventListener('pointerdown', () => { pointerDroveInput = true; }, true);
+  window.addEventListener('keydown', () => { pointerDroveInput = false; }, true);
+
+  for (const menu of [mediaSel, filterSel, stereoLayoutSel, rateSel, screenSel, roleSel]) {
+    menu.addEventListener('change', () => {
+      if (pointerDroveInput) stage.focus({ preventScroll: true });
+    });
+  }
 
   // Keyboard transport.
   window.addEventListener('keydown', (e) => {

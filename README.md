@@ -81,6 +81,11 @@ Safari 16.4+, or Firefox 130+.
   the footer as "skipped for pacing"); if the *decoder* falls behind, the
   clock rebases so no frame is ever silently lost.
 
+A focused field owns the keyboard — the transport keys are ignored while you
+are typing in *Go to frame* or *conv*, or arrowing through a dropdown. Picking
+from a menu with the mouse hands focus back to the stage, so the shortcuts
+work again straight away; keyboard navigation of a menu is left alone.
+
 The amber strip above the scrubber plots every **keyframe** (sync sample) in
 the file — the real random-access structure that determines seek cost. It
 also shades the **loop range** when one is set, in green, with a brighter
@@ -120,14 +125,18 @@ unfiltered.
 
 ### Stereo 3D
 
-Six **techniques** consume a frame-packed stereo pair. Which technique to
+Eight **techniques** consume a frame-packed stereo pair. Which technique to
 use and how the source packs the pair are independent choices, so they are
-two menus rather than one entry per combination: picking anything from the
-filter dropdown's **stereo pair** group reveals a **layout** menu beside it,
-plus the ⇄ **swap eyes** button (for displays whose polarization phase — or
-glasses whose colours — run the other way round; it also exchanges which
-half the single-eye views show, and hides itself for the difference view,
-which is symmetric in the eyes), and a **conv** field for convergence.
+two menus rather than one entry per combination. The **layout** menu sits
+beside *Open video…*, because it describes the file rather than the view; the
+⇄ **swap eyes** button and the **conv** convergence field sit on the right
+with the filter. All three stay in place at all times and simply grey out
+when the chosen filter cannot use them — a control that came and went would
+shift everything beside it on every filter change. Swap is for displays whose
+polarization phase, or glasses whose colours, run the other way round; it
+also exchanges which half the single-eye views show, and greys out for the
+difference view, which is symmetric in the eyes. Convergence greys out for
+the single-eye views, which have no second eye to move against.
 
 Layouts, all emitting one eye at its native geometry:
 
@@ -170,7 +179,19 @@ converges identically.
 
 Techniques:
 
-- **3D interlace** — row-interleaved for passive 3D displays: **even rows
+- **3D side-by-side** — the pair repacked across x, each eye at its native
+  width, *whatever the source layout was*. Twice an eye wide, so nothing is
+  resampled: a top/bottom file comes out double-wide, a squeezed half-SBS
+  file is un-squeezed to full SBS, and a full-SBS file is repacked as itself.
+- **3D side-by-side squished** — the same repack fitted into a *single* eye's
+  width, so each eye ends up half the frame wide, squeezed 2×. This is the
+  frame-packed shape a 3D TV or projector expects on its input, where the
+  display does the un-squeezing; the full version is the lossless one
+  for anything that can take a double-wide signal.
+
+  Both are the only techniques whose output holds both eyes, and both are
+  also what you free-view cross-eyed to see the depth without glasses.
+- **3D line interlaced** — row-interleaved for passive 3D displays: **even rows
   from the left eye, odd rows from the right**, each sampled at the same
   position in its own half so the eyes stay aligned.
 - **3D anaglyph B/W** — the classic monochrome red/cyan: each eye's Rec.709
@@ -213,6 +234,22 @@ native resolution, and tiled walls should use `fit=fill` rather than a
 letterboxing fit. The canvas is set to `image-rendering: pixelated` while
 the interlace is active so residual scaling cannot blend adjacent eye rows;
 the other stereo modes leave it off, since they want smooth scaling.
+
+### Reverse playback
+
+The rate selector runs backwards as well as forwards, but only slowly
+(−0.1×, −0.25×, −0.5×) — the reason is below, and it is the same reason there
+is no −1×.
+Reverse cannot use the frame queue at all: decoders only run forward, so
+every step back is a fresh seek that re-enters at the previous sync sample
+and decodes up to the target — most of a GOP of work per frame displayed.
+The requested rate is still honoured exactly — the clock keeps its own time
+and whatever the decoder cannot deliver in time is skipped, rather than the
+playback slowing down. That is precisely why the reverse rates stop at −0.5×:
+faster than that asks for a seek per frame or more, which nothing but a small
+clip can sustain, so the rates above it would have been labels for something
+the decoder never actually delivers. Audio is silent (it only masters at exactly 1×),
+and a loop range wraps at its in point back to its out point.
 
 ## Audio and the clock hierarchy
 
@@ -301,7 +338,7 @@ identical frame (error 0.0 ms).
 | `loop` | loop at end of file |
 | `fullscreen` (or `fs`) | stage fullscreen — video only, cursor hidden |
 | `screen=N` | display index fullscreen targets (Window Management API) |
-| `filter=name` | GPU filter at load (grayscale, sepia, invert, swirl, stereo, anaglyph, anaglyph-dubois, left-eye, right-eye, difference) |
+| `filter=name` | GPU filter at load (grayscale, sepia, invert, swirl, stereo, anaglyph, anaglyph-dubois, left-eye, right-eye, difference, side-by-side, side-by-side-squished) |
 | `slayout=sbs\|half-sbs\|tb` | stereo source layout (default `sbs`) |
 | `sconv=N` | stereo convergence: horizontal shift between the eyes, px (default 0) |
 | `swapeyes` | start any stereo mode with the eyes swapped |
@@ -440,16 +477,17 @@ box=1:boxcolor=black@0.7:boxborderw=20" \
 | ⏮ / Home | restart from the first frame |
 | End | last frame |
 | scrubber | frame-accurate scrub (1 frame per step) |
+| rate | playback rate, forward 0.1×–2×, reverse −0.1× to −0.5× |
 | Go to frame + Enter | jump to an exact frame index |
 | 🔁 / L | loop (whole file, or the in-out range when one is set) |
 | `[` / I | set the loop in point at the playhead (again to remove it) |
 | `]` / O | set the loop out point at the playhead (again to remove it) |
-| ⨯ | clear the loop range (shown only while one is set) |
+| ⨯ | clear the loop range (appears only while one is set) |
 | ⛶ / F | fullscreen (stage only) |
-| filter dropdown | GPU filter (grayscale, sepia, invert, swirl, stereo 3D, single eye, difference) |
-| layout dropdown | stereo source layout — SBS, half SBS, top/bottom (3D filters only) |
-| conv | stereo convergence in px (3D filters that show both eyes) |
-| ⇄ | swap left/right eye (stereo filters, except the symmetric difference) |
+| filter dropdown | GPU filter (grayscale, sepia, invert, swirl, stereo 3D, single eye, difference, side-by-side) |
+| layout dropdown | stereo source layout — SBS, half SBS, top/bottom (greyed unless a 3D filter is on) |
+| conv | stereo convergence in px (greyed unless both eyes are on screen) |
+| ⇄ | swap left/right eye (greyed for the symmetric difference view) |
 | 🔗 | copy a launch URL for another node (always as a follower) |
 
 ## Files

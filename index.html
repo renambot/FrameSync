@@ -33,6 +33,11 @@
     --sans: -apple-system, "Segoe UI", system-ui, sans-serif;
   }
   * { box-sizing: border-box; margin: 0; }
+  /* The UA's [hidden] rule is an author-stylesheet loser: any `display` we set
+     on a class beats it, so `hidden` silently did nothing to .goto wrappers
+     (the convergence field stayed visible for every filter). Enforce it once
+     here rather than per element. */
+  [hidden] { display: none !important; }
   html, body { height: 100%; }
   body {
     background: var(--bg);
@@ -116,6 +121,9 @@
     overflow: hidden;
   }
   #stage.dragging { border-color: var(--amber); }
+  /* Focused only so the transport keys have somewhere to land; it is not an
+     interactive control, so it should not look like one. */
+  #stage:focus { outline: none; }
   /* Interlaced stereo must never blur row-to-row: keep scaling hard-edged. */
   #screen.stereo { image-rendering: pixelated; }
   #stage:fullscreen {
@@ -264,7 +272,17 @@
     color: var(--range);
     background: rgba(61, 220, 132, 0.08);
   }
-  #media-sel { margin-left: auto; max-width: 320px; }
+  #media-sel { max-width: 320px; }
+  /* Source on the left (what the file IS), view settings on the right (how it
+     is shown). Its own row rather than trailing #transport, so the split does
+     not depend on where that row happens to wrap. */
+  #source-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  #source-row #filter-sel { margin-left: auto; }
   #volume {
     width: 90px;
     appearance: none;
@@ -300,6 +318,9 @@
   }
   #frame-goto { width: 90px; }
   #stereo-conv { width: 62px; }
+  /* The "conv" caption is a label, which has no disabled state of its own —
+     dim the pair together so the group reads as unavailable, not just the box. */
+  #conv-wrap:has(input:disabled) { opacity: 0.4; }
 
   footer {
     display: flex;
@@ -339,7 +360,7 @@
 
   <div id="error" hidden></div>
 
-  <div id="stage">
+  <div id="stage" tabindex="-1">
     <canvas id="screen"></canvas>
     <p id="drop-hint">Drop an MP4 here, or choose a file.<br>
       <small>Decoding runs entirely in this page — nothing is uploaded.</small></p>
@@ -372,11 +393,18 @@
       <button id="btn-fwd" title="Next frame (→)">▶︎</button>
       <button id="btn-jump-fwd" title="Forward 1 second (Shift+→)">+1s</button>
       <select id="rate" title="Playback rate">
-        <option value="0.1">0.1×</option>
-        <option value="0.25">0.25×</option>
-        <option value="0.5">0.5×</option>
-        <option value="1" selected>1×</option>
-        <option value="2">2×</option>
+        <optgroup label="reverse">
+          <option value="-0.5">-0.5×</option>
+          <option value="-0.25">-0.25×</option>
+          <option value="-0.1">-0.1×</option>
+        </optgroup>
+        <optgroup label="forward">
+          <option value="0.1">0.1×</option>
+          <option value="0.25">0.25×</option>
+          <option value="0.5">0.5×</option>
+          <option value="1" selected>1×</option>
+          <option value="2">2×</option>
+        </optgroup>
       </select>
       <button id="btn-loop" title="Loop (L)" aria-label="Toggle looping" aria-pressed="false">🔁</button>
       <button id="btn-in" title="Set loop in point at the playhead (I)"
@@ -395,10 +423,18 @@
       <button id="btn-mute" title="Mute / unmute" aria-label="Mute or unmute audio" disabled>🔊</button>
       <input id="volume" type="range" min="0" max="100" value="100"
              title="Volume" aria-label="Volume" disabled>
+    </div>
+    <div id="source-row">
       <select id="media-sel" title="Open a video — server media, recent local files, or browse">
         <option value="" selected>Open video…</option>
       </select>
       <input id="file-input" type="file" accept="video/mp4,video/quicktime,.mp4,.mov,.m4v" hidden>
+      <select id="stereo-layout" title="Stereo source layout"
+              aria-label="Stereo source layout">
+        <option value="sbs" selected>side-by-side</option>
+        <option value="half-sbs">half side-by-side</option>
+        <option value="tb">top/bottom</option>
+      </select>
       <select id="filter-sel" title="GPU filter (WebGPU)" aria-label="GPU filter">
         <option value="none" selected>no filter</option>
         <optgroup label="image">
@@ -408,7 +444,9 @@
           <option value="swirl">swirl</option>
         </optgroup>
         <optgroup label="stereo pair">
-          <option value="stereo">3D interlace</option>
+          <option value="side-by-side">3D side-by-side</option>
+          <option value="side-by-side-squished">3D side-by-side squished</option>
+          <option value="stereo">3D line interlaced</option>
           <option value="anaglyph">3D anaglyph B/W</option>
           <option value="anaglyph-dubois">3D anaglyph Dubois</option>
           <option value="left-eye">left eye only (2D)</option>
@@ -416,13 +454,7 @@
           <option value="difference">3D difference (L−R)</option>
         </optgroup>
       </select>
-      <select id="stereo-layout" title="Stereo source layout"
-              aria-label="Stereo source layout" hidden>
-        <option value="sbs" selected>side-by-side</option>
-        <option value="half-sbs">half side-by-side</option>
-        <option value="tb">top/bottom</option>
-      </select>
-      <label class="goto" id="conv-wrap" hidden>conv
+      <label class="goto" id="conv-wrap">conv
         <!-- No min/max here: the real bound is a tenth of the eye's width,
              which depends on the file and the layout, so applyFilter() sets
              both once a file is loaded. Hard-coding a placeholder would only
@@ -432,7 +464,7 @@
                aria-label="Stereo convergence in pixels">
       </label>
       <button id="btn-swap-eyes" title="Swap left/right eye" aria-label="Swap left and right eye"
-              aria-pressed="false" hidden>⇄</button>
+              aria-pressed="false">⇄</button>
     </div>
   </div>
 

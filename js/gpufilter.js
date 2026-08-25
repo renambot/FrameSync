@@ -89,8 +89,8 @@ class GPUFilter {
     this.convergence = convergence || 0;
   }
 
-  /** True while the mode reads a packed stereo pair (modes 5..10). */
-  get isStereo() { return this.mode >= 5 && this.mode <= 10; }
+  /** True while the mode reads a packed stereo pair (modes 5..12). */
+  get isStereo() { return this.mode >= 5 && this.mode <= 12; }
 
   /**
    * Output size for the current mode. A stereo mode emits ONE eye, so it
@@ -102,9 +102,18 @@ class GPUFilter {
   outputSize(frame) {
     const w = frame.displayWidth, h = frame.displayHeight;
     if (!this.isStereo) return { w, h };
-    if (this.layout === GPUFilter.LAYOUT_SBS) return { w: Math.max(1, w >> 1), h };
-    if (this.layout === GPUFilter.LAYOUT_TB) return { w, h: Math.max(1, h >> 1) };
-    return { w, h }; // LAYOUT_HALF_SBS: un-squeeze in place
+    const eye = this.layout === GPUFilter.LAYOUT_SBS
+      ? { w: Math.max(1, w >> 1), h }
+      : this.layout === GPUFilter.LAYOUT_TB
+        ? { w, h: Math.max(1, h >> 1) }
+        : { w, h };                    // LAYOUT_HALF_SBS: un-squeeze in place
+    // Both side-by-side views emit BOTH eyes; they differ only in how much
+    // room they give them. The full one is two eye-widths across, so nothing
+    // is resampled — a top/bottom source becomes double-wide, and a full-SBS
+    // source comes back to the frame's own size (a re-pack of itself). The
+    // squished one keeps a single eye's width and fits the pair inside it, so
+    // each eye is squeezed 2x — the frame-packed shape a 3D TV expects in.
+    return this.mode === GPUFilter.MODE_SBS ? { w: eye.w * 2, h: eye.h } : eye;
   }
 
   /** Filter one frame; returns the drawable canvas, or null to bypass. */
@@ -163,6 +172,11 @@ GPUFilter.LAYOUT_SBS = 0;       // 2W x H: each half is the eye's native width
 GPUFilter.LAYOUT_HALF_SBS = 1;  // W x H: each half squeezed 2x horizontally
 GPUFilter.LAYOUT_TB = 2;        // W x 2H: eyes stacked, top eye first
 
+// The one mode whose output holds both eyes rather than one, which outputSize
+// has to know about.
+GPUFilter.MODE_SBS = 11;         // full: two eye-widths across
+GPUFilter.MODE_SBS_SQUISHED = 12; // squished: one eye-width, pair squeezed in
+
 GPUFilter.WGSL = /* wgsl */`
 struct Params { mode: u32, w: f32, h: f32, swap: u32, pack: u32, conv: f32 };
 @group(0) @binding(0) var samp: sampler;
@@ -188,14 +202,14 @@ const LUMA = vec3f(0.2126, 0.7152, 0.0722);
 // pair stays centred on screen. The shift is stated in OUTPUT pixels and
 // converted into the source's u axis, where one eye's share is half the axis
 // when the pair is packed across x and all of it when packed across y.
-fn eyeUV(uv: vec2f, rightEye: bool) -> vec2f {
+fn eyeUV(uv: vec2f, rightEye: bool, eyeOutW: f32) -> vec2f {
   var second = rightEye;
   if (P.swap != 0u) { second = !second; }
   let tb = P.pack == 2u;
   let span = select(0.5, 1.0, tb);      // this eye's share of the source u axis
   var dir = 1.0;
   if (second) { dir = -1.0; }
-  let du = dir * P.conv * span / (2.0 * P.w);
+  let du = dir * P.conv * span / (2.0 * eyeOutW);
 
   var uOff = 0.0;
   var vOff = 0.0;
@@ -205,11 +219,18 @@ fn eyeUV(uv: vec2f, rightEye: bool) -> vec2f {
 
   // Keep the sample inside this eye's own share of the frame. Without this a
   // shift would walk straight into the neighbouring eye's pixels — a hard
-  // seam of the wrong image rather than the edge smear a clamp gives. Inset
-  // by half a source texel so linear filtering cannot blend across the seam
-  // either; the source is twice the output width only for full side-by-side.
-  let srcW = select(P.w, P.w * 2.0, P.pack == 0u);
-  let inset = 0.5 / srcW;
+  // seam of the wrong image rather than the edge smear a clamp gives.
+  //
+  // The inset is 1.5 source texels, not half of one: a decoded frame is 4:2:0,
+  // so the chroma plane is half resolution and the last luma column of one eye
+  // shares its chroma sample with the first column of the next. Half a texel
+  // clears linear filtering but not that, and the seam then bleeds the other
+  // eye's colour into a fully clamped edge.
+  //
+  // Derived from eyeOutW rather than P.w because the side-by-side view fills
+  // the output with two eyes, so P.w is not one eye's width there.
+  let srcW = select(eyeOutW, eyeOutW * 2.0, P.pack == 0u);
+  let inset = 1.5 / srcW;
   let u = clamp(uv.x * span + uOff + du, uOff + inset, uOff + span - inset);
   let v = select(uv.y, uv.y * 0.5 + vOff, tb);
   return vec2f(u, v);
@@ -223,13 +244,13 @@ fn eyeUV(uv: vec2f, rightEye: bool) -> vec2f {
   // their own half so the eyes stay vertically aligned.
   if (P.mode == 5u) {
     let odd = (u32(fragCoord.y) & 1u) == 1u;
-    return vec4f(textureSampleBaseClampToEdge(tex, samp, eyeUV(uv, odd)).rgb, 1.0);
+    return vec4f(textureSampleBaseClampToEdge(tex, samp, eyeUV(uv, odd, P.w)).rgb, 1.0);
   }
 
   // Anaglyph for red/cyan glasses (6 = greyscale, 7 = Dubois).
   if (P.mode == 6u || P.mode == 7u) {
-    let L = textureSampleBaseClampToEdge(tex, samp, eyeUV(uv, false)).rgb;
-    let R = textureSampleBaseClampToEdge(tex, samp, eyeUV(uv, true)).rgb;
+    let L = textureSampleBaseClampToEdge(tex, samp, eyeUV(uv, false, P.w)).rgb;
+    let R = textureSampleBaseClampToEdge(tex, samp, eyeUV(uv, true, P.w)).rgb;
 
     if (P.mode == 6u) {
       // Classic monochrome anaglyph: each eye's luma into its own channel.
@@ -255,7 +276,7 @@ fn eyeUV(uv: vec2f, rightEye: bool) -> vec2f {
   // One eye alone (8 = left, 9 = right): plain 2D, and the quickest way to
   // confirm the layout and eye order are right before putting glasses on.
   if (P.mode == 8u || P.mode == 9u) {
-    return vec4f(textureSampleBaseClampToEdge(tex, samp, eyeUV(uv, P.mode == 9u)).rgb, 1.0);
+    return vec4f(textureSampleBaseClampToEdge(tex, samp, eyeUV(uv, P.mode == 9u, P.w)).rgb, 1.0);
   }
 
   // Difference (10): |L - R| per channel, amplified. Black wherever the eyes
@@ -267,9 +288,22 @@ fn eyeUV(uv: vec2f, rightEye: bool) -> vec2f {
   // the raw difference is almost black; the gain is fixed, like every other
   // filter here. Symmetric in the eyes, so swapping them changes nothing.
   if (P.mode == 10u) {
-    let L = textureSampleBaseClampToEdge(tex, samp, eyeUV(uv, false)).rgb;
-    let R = textureSampleBaseClampToEdge(tex, samp, eyeUV(uv, true)).rgb;
+    let L = textureSampleBaseClampToEdge(tex, samp, eyeUV(uv, false, P.w)).rgb;
+    let R = textureSampleBaseClampToEdge(tex, samp, eyeUV(uv, true, P.w)).rgb;
     return vec4f(clamp(abs(L - R) * 2.0, vec3f(0.0), vec3f(1.0)), 1.0);
+  }
+
+  // Side by side (11 full, 12 squished): the pair repacked across x whatever
+  // the source layout was — for a display or projector that wants SBS in, or
+  // to free-view the depth cross-eyed without glasses. Both share this code
+  // exactly; they differ only in the output width outputSize() asks for, and
+  // the maths below is written in terms of that width rather than assuming
+  // it. These are the two modes that emit both eyes, so an eye spans half
+  // the output rather than all of it — hence P.w * 0.5.
+  if (P.mode == 11u || P.mode == 12u) {
+    let right = uv.x >= 0.5;
+    let e = vec2f(fract(uv.x * 2.0), uv.y);
+    return vec4f(textureSampleBaseClampToEdge(tex, samp, eyeUV(e, right, P.w * 0.5)).rgb, 1.0);
   }
 
   // Geometry filters warp the sample coordinate before any color work.

@@ -73,6 +73,7 @@ class FramePlayer {
 
     this.seeking = false;
     this.pendingSeek = -1;
+    this.pendingKeepClock = false;
     this.lastRequestedIndex = -1;
     this.droppedForPacing = 0;
 
@@ -285,19 +286,31 @@ class FramePlayer {
   /**
    * Frame-exact seek. Concurrent calls coalesce: while one seek is decoding,
    * newer targets replace each other and only the last one runs after it.
+   *
+   * keepClock leaves the playback clock alone. A seek normally re-anchors it,
+   * which is right when the playhead is being *moved* — a scrub, a loop wrap.
+   * It is wrong when the seek IS the playback, as in reverse: re-anchoring
+   * every frame meant no elapsed time ever accumulated, so reverse advanced
+   * one frame per seek at whatever speed the decoder managed and ignored the
+   * requested rate completely.
    */
-  async seekToFrame(index) {
+  async seekToFrame(index, keepClock = false) {
     if (!this.frameCount) return;
     index = Math.max(0, Math.min(this.frameCount - 1, Math.round(index)));
     this.lastRequestedIndex = index;
-    if (this.seeking) { this.pendingSeek = index; return; }
+    if (this.seeking) {
+      this.pendingSeek = index;
+      this.pendingKeepClock = keepClock;
+      return;
+    }
     this.seeking = true;
     try {
-      let target = index;
+      let target = index, keep = keepClock;
       do {
         this.pendingSeek = -1;
-        await this._doSeek(target);
+        await this._doSeek(target, keep);
         target = this.pendingSeek;
+        keep = this.pendingKeepClock;
       } while (target >= 0);
     } finally {
       this.seeking = false;
@@ -311,7 +324,7 @@ class FramePlayer {
    * skip backwards — and it is also what makes the result exact rather than
    * approximate.
    */
-  async _doSeek(index) {
+  async _doSeek(index, keepClock = false) {
     const decIdx = this.presOrder[index];
     const targetTs = this.samples[decIdx].ts;
 
@@ -330,7 +343,7 @@ class FramePlayer {
 
     const frame = await this._nextFrame();
     if (frame) this._displayFrame(frame);
-    if (this.playing) { this._rebase(); this._syncAudio(); }
+    if (this.playing && !keepClock) { this._rebase(); this._syncAudio(); }
   }
 
   /**
@@ -361,9 +374,12 @@ class FramePlayer {
       this.cb.onPlayState?.(true);
       this.raf = requestAnimationFrame(() => this._tick());
     };
-    // Play at the end restarts from the top — or from the in point, so
-    // pressing play on a parked loop range replays the range.
-    if (this.currentIndex >= this.frameCount - 1 && this.ended) {
+    // Play parked at an edge restarts from the other one, so the range (or
+    // the file) plays through rather than ending immediately. Which edge
+    // depends on the direction of travel.
+    if (this.rate < 0 && this.currentIndex <= this.loopStartIndex) {
+      this.seekToFrame(this.loopEndIndex).then(start);
+    } else if (this.rate > 0 && this.currentIndex >= this.frameCount - 1 && this.ended) {
       this.seekToFrame(this.loopStartIndex).then(start);
     } else {
       start();
@@ -424,6 +440,37 @@ class FramePlayer {
       : this.audioLive ? this.audio.nowUs()
       : this.baseTs + (performance.now() - this.baseWall) * 1000 * this.rate;
 
+    // Reverse playback cannot use the frame queue at all: decoders only run
+    // forward, so every step back is a fresh seek that re-enters at the
+    // previous sync sample and decodes up to the target. That costs most of a
+    // GOP per displayed frame, which is why this is a scrubbing tool rather
+    // than real playback — the clock keeps its own time, so whatever the
+    // decoder cannot keep up with is simply skipped.
+    if (!this.externalClock && this.rate < 0) {
+      const target = this._indexForTime(mediaTime);
+      // Mirror of the forward out-point wrap: travelling backwards, the in
+      // point is the edge, and the file's start when no range is looping.
+      // Both conditions are needed — the floor frame must have been shown
+      // (currentIndex) before the clock asking for less (target) ends the
+      // pass, or the edge frame gets skipped.
+      const floor = this.loop && this.inPoint !== null ? this.inPoint : 0;
+      if (target <= floor && this.currentIndex <= floor) {
+        if (this.loop) {
+          this.seekToFrame(this.loopEndIndex);
+          this.raf = requestAnimationFrame(() => this._tick());
+          return;
+        }
+        this.playing = false;
+        if (this.audio) this.audio.stop();
+        this.audioLive = false;
+        this.cb.onPlayState?.(false);
+        return;
+      }
+      if (!this.seeking && target !== this.currentIndex) this.seekToFrame(target, true);
+      this.raf = requestAnimationFrame(() => this._tick());
+      return;
+    }
+
     // Following an external clock, the target can jump anywhere (master
     // seeked, we joined late, clock estimate refined). Consume the queue for
     // small forward motion; hard-seek when the target moves backward past
@@ -450,7 +497,7 @@ class FramePlayer {
       // happens mid-file. Followers are excluded — their position comes from
       // the master's anchor, and the master's own wrap already moves them.
       if (this.loop && this.outPoint !== null && !this.externalClock &&
-          this.currentIndex >= this.outPoint) {
+          this.rate > 0 && this.currentIndex >= this.outPoint) {
         this.seekToFrame(this.loopStartIndex);
         this.raf = requestAnimationFrame(() => this._tick());
         return;
@@ -504,8 +551,13 @@ class FramePlayer {
     return { inPoint: a, outPoint: b };
   }
 
-  /** Where a loop wrap lands: the in point, or the start of the file. */
+  /** Where a forward loop wrap lands: the in point, or the start of the file. */
   get loopStartIndex() { return this.inPoint === null ? 0 : this.inPoint; }
+
+  /** Where a reverse loop wrap lands: the out point, or the last frame. */
+  get loopEndIndex() {
+    return this.outPoint === null ? Math.max(0, this.frameCount - 1) : this.outPoint;
+  }
 
   /**
    * Seek relative to where the playhead is *heading*: during an in-flight
