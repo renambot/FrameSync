@@ -353,6 +353,8 @@ box=1:boxcolor=black@0.7:boxborderw=20" \
 - `js/gpufilter.js` — `GPUFilter`: WebGPU/WGSL filter stage, incl. stereo 3D
 - `js/syncclient.js` — `SyncClient`: NTP-style shared clock + state exchange
 - `js/main.js` — UI wiring, GOP strip, keyboard transport, sync roles
+- `docs/` — artwork: architecture illustration, UI screenshot, header image
+  and the square favicon crop
 
 ## Current limitations
 
