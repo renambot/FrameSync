@@ -838,6 +838,20 @@
     }
   });
 
+  /**
+   * Whether a focused element owns the keyboard outright. Naming individual
+   * fields — which is what the transport handler used to do — regresses the
+   * moment a field is added: the convergence input arrived unguarded and
+   * answered i/o/arrows/space as transport commands while being typed into.
+   * Ask what the target IS instead. Buttons are deliberately absent: they
+   * only need Space (handled at the call site), and excluding them outright
+   * would break stepping right after clicking a transport button.
+   */
+  const ownsKeyboard = (el) => el instanceof HTMLInputElement
+    || el instanceof HTMLSelectElement
+    || el instanceof HTMLTextAreaElement
+    || Boolean(el && el.isContentEditable);
+
   // Fullscreen shows the stage only (pure video, no console) — works in any
   // role, including followers, whose transport is otherwise locked.
   // With the Window Management API (Chromium, secure context) it can target
@@ -912,7 +926,7 @@
   }
   btnFs.addEventListener('click', toggleFullscreen);
   window.addEventListener('keydown', (e) => {
-    if ((e.key === 'f' || e.key === 'F') && e.target !== frameGoto && !e.metaKey && !e.ctrlKey) {
+    if ((e.key === 'f' || e.key === 'F') && !ownsKeyboard(e.target) && !e.metaKey && !e.ctrlKey) {
       e.preventDefault();
       toggleFullscreen();
     }
@@ -922,7 +936,10 @@
 
   // Keyboard transport.
   window.addEventListener('keydown', (e) => {
-    if (!player || role === 'follower' || e.target === frameGoto || e.target === slider) return;
+    if (!player || role === 'follower' || ownsKeyboard(e.target)) return;
+    // Space activates a focused button; stealing it would leave every button
+    // unusable from the keyboard, since preventDefault suppresses the click.
+    if (e.key === ' ' && e.target instanceof HTMLButtonElement) return;
     switch (e.key) {
       case ' ': e.preventDefault(); player.toggle(); break;
       case 'ArrowLeft': e.preventDefault(); e.shiftKey ? jumpSeconds(-1) : player.stepBack(); break;
