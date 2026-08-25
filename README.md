@@ -19,6 +19,9 @@ modern low-level web media stack:
   interpolated or dropped silently.
 - **Web Audio** — decoded AAC is scheduled sample-accurately on the
   `AudioContext` timeline.
+- **WebGPU** — WGSL shaders filter every frame with no readback: each
+  `VideoFrame` becomes a `GPUExternalTexture`, including row-interleaved and
+  anaglyph **stereo 3D** from side-by-side sources.
 
 ## Run it
 
