@@ -21,6 +21,7 @@
 <link rel="icon" type="image/png" href="docs/logo.png">
 <style>
   :root {
+    --range: #3ddc84;   /* loop range — the one accent that is not amber */
     --bg: #0d1013;
     --panel: #14181d;
     --panel-edge: #1f262d;
@@ -257,6 +258,12 @@
     outline-offset: 1px;
   }
   #btn-play { min-width: 64px; }
+  #btn-in, #btn-out, #btn-clear-range { min-width: 34px; padding: 7px 8px; }
+  #btn-in.active, #btn-out.active {
+    border-color: var(--range);
+    color: var(--range);
+    background: rgba(61, 220, 132, 0.08);
+  }
   #media-sel { margin-left: auto; max-width: 320px; }
   #volume {
     width: 90px;
@@ -292,6 +299,7 @@
     text-transform: uppercase;
   }
   #frame-goto { width: 90px; }
+  #stereo-conv { width: 62px; }
 
   footer {
     display: flex;
@@ -371,6 +379,12 @@
         <option value="2">2×</option>
       </select>
       <button id="btn-loop" title="Loop (L)" aria-label="Toggle looping" aria-pressed="false">🔁</button>
+      <button id="btn-in" title="Set loop in point at the playhead (I)"
+              aria-label="Set loop in point">[</button>
+      <button id="btn-out" title="Set loop out point at the playhead (O)"
+              aria-label="Set loop out point">]</button>
+      <button id="btn-clear-range" title="Clear the loop range"
+              aria-label="Clear the loop range" hidden>⨯</button>
       <label class="goto">Go to frame
         <input id="frame-goto" type="number" min="0" step="1" placeholder="0">
       </label>
@@ -399,6 +413,7 @@
           <option value="anaglyph-dubois">3D anaglyph Dubois</option>
           <option value="left-eye">left eye only (2D)</option>
           <option value="right-eye">right eye only (2D)</option>
+          <option value="difference">3D difference (L−R)</option>
         </optgroup>
       </select>
       <select id="stereo-layout" title="Stereo source layout"
@@ -407,6 +422,11 @@
         <option value="half-sbs">half side-by-side</option>
         <option value="tb">top/bottom</option>
       </select>
+      <label class="goto" id="conv-wrap" hidden>conv
+        <input id="stereo-conv" type="number" min="-400" max="400" step="1" value="0"
+               title="Convergence: horizontal shift between the eyes, in pixels of total separation"
+               aria-label="Stereo convergence in pixels">
+      </label>
       <button id="btn-swap-eyes" title="Swap left/right eye" aria-label="Swap left and right eye"
               aria-pressed="false" hidden>⇄</button>
     </div>
@@ -414,7 +434,7 @@
 
   <footer>
     <span id="stats">decode queue 0 · buffered 0 · skipped for pacing 0</span>
-    <span>Space play · ←/→ step one frame · Shift+←/→ ±1 s · Home/End first/last · L loop · F fullscreen</span>
+    <span>Space play · ←/→ step one frame · Shift+←/→ ±1 s · Home/End first/last · I/O loop in/out · L loop · F fullscreen</span>
   </footer>
 
   <script>

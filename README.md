@@ -20,9 +20,9 @@ modern low-level web media stack:
 - **Web Audio** — decoded AAC is scheduled sample-accurately on the
   `AudioContext` timeline.
 - **WebGPU** — WGSL shaders filter every frame with no readback: each
-  `VideoFrame` becomes a `GPUExternalTexture`, including row-interleaved,
-  anaglyph, and single-eye **stereo 3D** from side-by-side or top/bottom
-  sources.
+  `VideoFrame` becomes a `GPUExternalTexture`, including **stereo 3D** from
+  side-by-side or top/bottom sources — row-interleaved, anaglyph, single-eye,
+  and an L−R difference view — with adjustable convergence.
 
 ## Run it
 
@@ -78,7 +78,27 @@ Safari 16.4+, or Firefox 130+.
   clock rebases so no frame is ever silently lost.
 
 The amber strip above the scrubber plots every **keyframe** (sync sample) in
-the file — the real random-access structure that determines seek cost.
+the file — the real random-access structure that determines seek cost. It
+also shades the **loop range** when one is set, in green, with a brighter
+edge at each end you have placed. Green is reserved for the range throughout:
+amber says where the file's keyframes and the playhead are, green says what
+you chose to repeat — and against an amber band the amber playhead was
+invisible.
+
+### In and out points (A-B loop)
+
+`[` and `]` (or **I** and **O**) put the loop's in and out point at the
+playhead, and looping then runs that range instead of the whole file. Setting
+the first point turns looping on, since placing a range is a statement of
+intent to repeat it; ⨯ clears the range, and pressing `[` or `]` again where
+that end already sits removes just that end. An open end means the file's own
+edge, so an out point alone loops from the start up to it.
+
+The range can never be inverted: pushing one end past the other drops the
+other rather than leaving a range that can never play. The wrap is a normal
+frame-exact seek, so it rebases the clock and restarts audio at the in point,
+and a follower ignores its own range entirely — its position comes from the
+master's anchor, and the master's wrap already moves it.
 
 ## GPU filters (WebGPU)
 
@@ -96,13 +116,14 @@ unfiltered.
 
 ### Stereo 3D
 
-Five **techniques** consume a frame-packed stereo pair. Which technique to
+Six **techniques** consume a frame-packed stereo pair. Which technique to
 use and how the source packs the pair are independent choices, so they are
 two menus rather than one entry per combination: picking anything from the
 filter dropdown's **stereo pair** group reveals a **layout** menu beside it,
 plus the ⇄ **swap eyes** button (for displays whose polarization phase — or
 glasses whose colours — run the other way round; it also exchanges which
-half the single-eye views show).
+half the single-eye views show, and hides itself for the difference view,
+which is symmetric in the eyes), and a **conv** field for convergence.
 
 Layouts, all emitting one eye at its native geometry:
 
@@ -111,6 +132,27 @@ Layouts, all emitting one eye at its native geometry:
 | **side-by-side** | 2W × H | left beside right, native width | W × H, mapped 1:1 |
 | **half side-by-side** | W × H | squeezed 2× horizontally | W × H, un-squeezed |
 | **top/bottom** | W × 2H | left above right, native height | W × H, mapped 1:1 |
+
+#### Convergence (horizontal image translation)
+
+**conv** shifts the eyes horizontally relative to each other, which moves the
+**convergence plane** — the depth that lands *on* the screen. Objects at that
+depth have zero disparity; everything nearer floats in front of the screen,
+everything further sits behind it. Content graded for a phone is often
+painful on a wall, and this is the correction: it is the one stereo parameter
+that depends on the display rather than on the footage.
+
+The value is a total separation in output pixels, and the eyes each move half
+of it in opposite directions, so the picture stays centred. Sampling is
+clamped inside each eye's own half of the packed frame, so a large shift
+smears that eye's edge rather than dragging in the neighbouring eye's pixels.
+That does mean an extreme value costs you a strip at one edge — real
+convergence corrections are a fraction of a percent of the width.
+
+Pair it with the **difference** view to set it objectively: pick a feature
+that should sit at screen depth and shift until its fringes go black. `conv`
+rides in the synced state and `?sconv=N` sets it at launch, so a whole wall
+converges identically.
 
 Techniques:
 
@@ -132,9 +174,18 @@ Techniques:
   requirements: it is the quickest way to confirm the layout and eye order
   are right, to play 3D material on a 2D wall, and to compare the two eyes
   by toggling between them.
+- **3D difference (L−R)** — the separation itself, as a picture: `|left −
+  right|` per channel, amplified 2×. Black wherever the eyes agree, so the
+  bright fringes *are* the parallax and **a fringe's width is the disparity
+  in pixels** — at the convergence plane it goes to black. It reads faults
+  off the screen directly: a vertical misalignment lights up horizontal
+  edges, which a correct pair leaves dark; a wrong layout lights up the whole
+  frame; and a mono file encoded as stereo is black everywhere. Being
+  symmetric in the eyes, it is the one stereo mode ⇄ cannot change, so the
+  button hides itself there.
 
-The anaglyphs and the single-eye views need no pixel alignment, so they
-scale and letterbox freely, unlike the interlace.
+The anaglyphs, the single-eye views and the difference all need no pixel
+alignment, so they scale and letterbox freely, unlike the interlace.
 
 Stereo runs before the crop/fit stage, so it composes with tiling — and the
 filter choice, layout, and eye swap all ride in the synced state, so one
@@ -236,8 +287,9 @@ identical frame (error 0.0 ms).
 | `loop` | loop at end of file |
 | `fullscreen` (or `fs`) | stage fullscreen — video only, cursor hidden |
 | `screen=N` | display index fullscreen targets (Window Management API) |
-| `filter=name` | GPU filter at load (grayscale, sepia, invert, swirl, stereo, anaglyph, anaglyph-dubois, left-eye, right-eye) |
+| `filter=name` | GPU filter at load (grayscale, sepia, invert, swirl, stereo, anaglyph, anaglyph-dubois, left-eye, right-eye, difference) |
 | `slayout=sbs\|half-sbs\|tb` | stereo source layout (default `sbs`) |
+| `sconv=N` | stereo convergence: horizontal shift between the eyes, px (default 0) |
 | `swapeyes` | start any stereo mode with the eyes swapped |
 | `tile=col,row,cols,rows` | show one grid slice of the wall (tiled mode) |
 | `crop=x,y,w,h` | show an arbitrary normalized rect (bezel compensation) |
@@ -379,12 +431,16 @@ box=1:boxcolor=black@0.7:boxborderw=20" \
 | End | last frame |
 | scrubber | frame-accurate scrub (1 frame per step) |
 | Go to frame + Enter | jump to an exact frame index |
-| 🔁 / L | loop at end of file |
+| 🔁 / L | loop (whole file, or the in-out range when one is set) |
+| `[` / I | set the loop in point at the playhead (again to remove it) |
+| `]` / O | set the loop out point at the playhead (again to remove it) |
+| ⨯ | clear the loop range (shown only while one is set) |
 | ⛶ / F | fullscreen (stage only) |
-| filter dropdown | GPU filter (grayscale, sepia, invert, swirl, stereo 3D, single eye) |
+| filter dropdown | GPU filter (grayscale, sepia, invert, swirl, stereo 3D, single eye, difference) |
 | layout dropdown | stereo source layout — SBS, half SBS, top/bottom (3D filters only) |
+| conv | stereo convergence in px (3D filters that show both eyes) |
+| ⇄ | swap left/right eye (stereo filters, except the symmetric difference) |
 | 🔗 | copy a launch URL for another node (always as a follower) |
-| ⇄ | swap left/right eye (stereo filters) |
 
 ## Files
 
@@ -392,11 +448,11 @@ box=1:boxcolor=black@0.7:boxborderw=20" \
 - `server.js` — zero-dep Node: static files, `/sync` WebSocket, `/status`
 - `js/mp4box/` — vendored MP4Box.js v2.4.1 (native ES module, bridged to `window.MP4Box`)
 - `js/demuxer.js` — MP4Box wrapper → decoder configs + sample tables (video + audio)
-- `js/player.js` — `FramePlayer`: decode pipeline, clock hierarchy, seek/step logic
+- `js/player.js` — `FramePlayer`: decode pipeline, clock hierarchy, seek/step logic, loop range
 - `js/audio.js` — `AudioEngine`: AudioDecoder → sample-accurate Web Audio scheduling
 - `js/gpufilter.js` — `GPUFilter`: WebGPU/WGSL filter stage, incl. stereo 3D
 - `js/syncclient.js` — `SyncClient`: NTP-style shared clock + state exchange
-- `js/main.js` — UI wiring, GOP strip, keyboard transport, sync roles
+- `js/main.js` — UI wiring, GOP strip, keyboard transport, sync roles, launch URLs
 - `docs/` — artwork: architecture illustration, UI screenshot, header image
   and the square favicon crop
 

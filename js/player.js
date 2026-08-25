@@ -57,6 +57,11 @@ class FramePlayer {
 
     this.playing = false;
     this.loop = false;
+    // Loop range, as presentation indices; null means "the file's own edge".
+    // Consulted only while looping, so setting a range never changes where
+    // ordinary playback can go.
+    this.inPoint = null;
+    this.outPoint = null;
     this.rate = 1;
     this.baseTs = 0;
     this.baseWall = 0;
@@ -356,9 +361,10 @@ class FramePlayer {
       this.cb.onPlayState?.(true);
       this.raf = requestAnimationFrame(() => this._tick());
     };
-    // Play at the last frame restarts from the top.
+    // Play at the end restarts from the top — or from the in point, so
+    // pressing play on a parked loop range replays the range.
     if (this.currentIndex >= this.frameCount - 1 && this.ended) {
-      this.seekToFrame(0).then(start);
+      this.seekToFrame(this.loopStartIndex).then(start);
     } else {
       start();
     }
@@ -439,6 +445,16 @@ class FramePlayer {
 
     if (next) {
       this._displayFrame(next);
+      // An out point wraps here rather than in the end-of-file branch below:
+      // that branch only fires once the decoder has flushed, which never
+      // happens mid-file. Followers are excluded — their position comes from
+      // the master's anchor, and the master's own wrap already moves them.
+      if (this.loop && this.outPoint !== null && !this.externalClock &&
+          this.currentIndex >= this.outPoint) {
+        this.seekToFrame(this.loopStartIndex);
+        this.raf = requestAnimationFrame(() => this._tick());
+        return;
+      }
     } else if (this.queue.length === 0) {
       if (this.ended) {
         if (this.externalClock) {
@@ -447,9 +463,9 @@ class FramePlayer {
           return;
         }
         if (this.loop) {
-          // Wrap around: a playing seek to frame 0 rebases the clock and
-          // restarts audio there; `seeking` keeps the loop alive meanwhile.
-          this.seekToFrame(0);
+          // Wrap around: a playing seek rebases the clock and restarts audio
+          // at the target; `seeking` keeps the loop alive meanwhile.
+          this.seekToFrame(this.loopStartIndex);
           this.raf = requestAnimationFrame(() => this._tick());
           return;
         }
@@ -469,6 +485,27 @@ class FramePlayer {
     }
     this.raf = requestAnimationFrame(() => this._tick());
   }
+
+  /**
+   * Set the loop range, as presentation indices or null for the file's edge.
+   * A range that would be inverted is not allowed to exist: pushing one end
+   * past the other drops the other rather than silently producing a range
+   * that can never play. Returns the normalised pair.
+   */
+  setLoopRange(inPoint, outPoint) {
+    const clamp = (i) => (i === null ? null
+      : Math.max(0, Math.min(this.frameCount - 1, Math.round(i))));
+    let a = clamp(inPoint), b = clamp(outPoint);
+    if (a !== null && b !== null && a >= b) {
+      if (a !== this.inPoint) b = null; else a = null;
+    }
+    this.inPoint = a;
+    this.outPoint = b;
+    return { inPoint: a, outPoint: b };
+  }
+
+  /** Where a loop wrap lands: the in point, or the start of the file. */
+  get loopStartIndex() { return this.inPoint === null ? 0 : this.inPoint; }
 
   /**
    * Seek relative to where the playhead is *heading*: during an in-flight
@@ -602,6 +639,8 @@ class FramePlayer {
     this.feedPos = 0;
     this.endFlushed = false;
     this.droppedForPacing = 0;
+    this.inPoint = null;
+    this.outPoint = null;
     this._wake();
   }
 }

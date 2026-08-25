@@ -22,6 +22,7 @@ class GPUFilter {
     this.ready = false;
     this.mode = 0;
     this.swapEyes = false;
+    this.convergence = 0;
     this.layout = 0;
   }
 
@@ -63,7 +64,7 @@ class GPUFilter {
       });
       this.uarr = new ArrayBuffer(32);
       this.uu32 = new Uint32Array(this.uarr); // [0] mode, [3] swap, [4] layout
-      this.uf32 = new Float32Array(this.uarr); // [1] w, [2] h
+      this.uf32 = new Float32Array(this.uarr); // [1] w, [2] h, [5] convergence
 
       this.ready = true;
       return true;
@@ -76,15 +77,20 @@ class GPUFilter {
   /**
    * mode: index into the shader's filter switch (0 = none).
    * layout: how a stereo source packs the eye pair (GPUFilter.LAYOUT_*).
+   * convergence: horizontal image translation between the eyes, in output
+   * pixels of total separation (each eye moves half of it, in opposite
+   * directions, so the pair stays centred). Positive pushes the convergence
+   * plane one way, negative the other; 0 leaves the source untouched.
    */
-  set(mode, swapEyes = false, layout = 0) {
+  set(mode, swapEyes = false, layout = 0, convergence = 0) {
     this.mode = mode | 0;
     this.swapEyes = Boolean(swapEyes);
     this.layout = layout | 0;
+    this.convergence = convergence || 0;
   }
 
-  /** True while the mode reads a packed stereo pair (modes 5..9). */
-  get isStereo() { return this.mode >= 5 && this.mode <= 9; }
+  /** True while the mode reads a packed stereo pair (modes 5..10). */
+  get isStereo() { return this.mode >= 5 && this.mode <= 10; }
 
   /**
    * Output size for the current mode. A stereo mode emits ONE eye, so it
@@ -115,6 +121,7 @@ class GPUFilter {
       this.uf32[2] = h;
       this.uu32[3] = this.swapEyes ? 1 : 0;
       this.uu32[4] = this.layout; // shader field is 'pack' — 'layout' is reserved in WGSL
+      this.uf32[5] = this.convergence;
       this.device.queue.writeBuffer(this.ubuf, 0, this.uarr);
 
       const ext = this.device.importExternalTexture({ source: frame });
@@ -157,7 +164,7 @@ GPUFilter.LAYOUT_HALF_SBS = 1;  // W x H: each half squeezed 2x horizontally
 GPUFilter.LAYOUT_TB = 2;        // W x 2H: eyes stacked, top eye first
 
 GPUFilter.WGSL = /* wgsl */`
-struct Params { mode: u32, w: f32, h: f32, swap: u32, pack: u32 };
+struct Params { mode: u32, w: f32, h: f32, swap: u32, pack: u32, conv: f32 };
 @group(0) @binding(0) var samp: sampler;
 @group(0) @binding(1) var tex: texture_external;
 @group(0) @binding(2) var<uniform> P: Params;
@@ -175,13 +182,37 @@ const LUMA = vec3f(0.2126, 0.7152, 0.0722);
 // serves every layout: full side-by-side lands 1:1 because the output is
 // already one eye wide, half side-by-side stretches the squeezed eye back
 // across the full width, and top/bottom does the same down the y axis.
+//
+// Convergence (horizontal image translation) is applied here too: the eyes
+// move half the requested separation each, in opposite directions, so the
+// pair stays centred on screen. The shift is stated in OUTPUT pixels and
+// converted into the source's u axis, where one eye's share is half the axis
+// when the pair is packed across x and all of it when packed across y.
 fn eyeUV(uv: vec2f, rightEye: bool) -> vec2f {
   var second = rightEye;
   if (P.swap != 0u) { second = !second; }
-  var off = 0.0;
-  if (second) { off = 0.5; }
-  if (P.pack == 2u) { return vec2f(uv.x, uv.y * 0.5 + off); }
-  return vec2f(uv.x * 0.5 + off, uv.y);
+  let tb = P.pack == 2u;
+  let span = select(0.5, 1.0, tb);      // this eye's share of the source u axis
+  var dir = 1.0;
+  if (second) { dir = -1.0; }
+  let du = dir * P.conv * span / (2.0 * P.w);
+
+  var uOff = 0.0;
+  var vOff = 0.0;
+  if (second) {
+    if (tb) { vOff = 0.5; } else { uOff = 0.5; }
+  }
+
+  // Keep the sample inside this eye's own share of the frame. Without this a
+  // shift would walk straight into the neighbouring eye's pixels — a hard
+  // seam of the wrong image rather than the edge smear a clamp gives. Inset
+  // by half a source texel so linear filtering cannot blend across the seam
+  // either; the source is twice the output width only for full side-by-side.
+  let srcW = select(P.w, P.w * 2.0, P.pack == 0u);
+  let inset = 0.5 / srcW;
+  let u = clamp(uv.x * span + uOff + du, uOff + inset, uOff + span - inset);
+  let v = select(uv.y, uv.y * 0.5 + vOff, tb);
+  return vec2f(u, v);
 }
 
 @fragment fn fs(@builtin(position) fragCoord: vec4f) -> @location(0) vec4f {
@@ -225,6 +256,20 @@ fn eyeUV(uv: vec2f, rightEye: bool) -> vec2f {
   // confirm the layout and eye order are right before putting glasses on.
   if (P.mode == 8u || P.mode == 9u) {
     return vec4f(textureSampleBaseClampToEdge(tex, samp, eyeUV(uv, P.mode == 9u)).rgb, 1.0);
+  }
+
+  // Difference (10): |L - R| per channel, amplified. Black wherever the eyes
+  // agree — that is the convergence plane — so the bright fringes ARE the
+  // parallax and their width is the separation. It reads alignment faults
+  // straight off the screen: a vertical offset lights up horizontal edges,
+  // which a correctly aligned pair leaves dark, and a wrong layout lights up
+  // the whole frame. Amplified because real disparities are a few percent and
+  // the raw difference is almost black; the gain is fixed, like every other
+  // filter here. Symmetric in the eyes, so swapping them changes nothing.
+  if (P.mode == 10u) {
+    let L = textureSampleBaseClampToEdge(tex, samp, eyeUV(uv, false)).rgb;
+    let R = textureSampleBaseClampToEdge(tex, samp, eyeUV(uv, true)).rgb;
+    return vec4f(clamp(abs(L - R) * 2.0, vec3f(0.0), vec3f(1.0)), 1.0);
   }
 
   // Geometry filters warp the sample coordinate before any color work.

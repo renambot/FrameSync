@@ -27,9 +27,14 @@
   const volSlider = $('volume');
   const btnFs = $('btn-fs');
   const btnLoop = $('btn-loop');
+  const btnIn = $('btn-in');
+  const btnOut = $('btn-out');
+  const btnClearRange = $('btn-clear-range');
   let loopOn = false;
   const filterSel = $('filter-sel');
   const stereoLayoutSel = $('stereo-layout');
+  const convWrap = $('conv-wrap');
+  const convInput = $('stereo-conv');
   const btnSwapEyes = $('btn-swap-eyes');
 
   const slider = $('scrubber');
@@ -137,6 +142,26 @@
     g.clearRect(0, 0, w, h);
 
     const n = player.frameCount;
+    const at = (i) => (i / (n - 1 || 1)) * (w - 1);
+
+    // Loop range, drawn first so the keyframe ticks stay legible on top of
+    // it. Green (#3ddc84), not the UI's amber, and that is the point: amber
+    // means the file's own structure and where the playhead is, green means
+    // the range you chose. In amber the ticks and the playhead disappeared
+    // into the band, being the same hue as it. An open end runs to the edge
+    // of the strip, which is what looping with one point set actually does.
+    if (player.inPoint !== null || player.outPoint !== null) {
+      const x0 = player.inPoint === null ? 0 : at(player.inPoint);
+      const x1 = player.outPoint === null ? w : at(player.outPoint);
+      g.fillStyle = 'rgba(61, 220, 132, 0.22)';
+      g.fillRect(x0, 0, Math.max(1, x1 - x0), h);
+      // Thinner and dimmer than the playhead (2px, full opacity) so the
+      // range's ends never read as the playhead sitting on top of them.
+      g.fillStyle = 'rgba(61, 220, 132, 0.85)';
+      if (player.inPoint !== null) g.fillRect(x0, 0, 1, h);
+      if (player.outPoint !== null) g.fillRect(x1 - 1, 0, 1, h);
+    }
+
     // Keyframe ticks — the real random-access points of this file.
     g.fillStyle = 'rgba(255, 179, 0, 0.55)';
     for (let i = 0; i < n; i++) {
@@ -233,6 +258,7 @@
       volSlider.disabled = !hasAudio;
       btnMute.textContent = hasAudio && audioEngine.muted ? '🔇' : '🔊';
       player.loop = loopOn;
+      renderLoopRange(); // a new file starts with no range — destroy() cleared it
       applyFilter();
       if (viewport) player.setViewport(viewport, { fit: viewportFit, wallGrid });
       loadedSrc = src;
@@ -374,6 +400,7 @@
       filter: filterName,
       swapeyes: swapEyes,
       slayout: stereoLayout,
+      sconv: stereoConv,
     });
   }
 
@@ -388,10 +415,12 @@
     lastMasterState = s;
     if (s.filter !== undefined && (s.filter !== filterName
         || Boolean(s.swapeyes) !== swapEyes
-        || (s.slayout || 'sbs') !== stereoLayout)) {
+        || (s.slayout || 'sbs') !== stereoLayout
+        || (s.sconv || 0) !== stereoConv)) {
       filterName = s.filter || 'none';
       swapEyes = Boolean(s.swapeyes);
       stereoLayout = s.slayout || 'sbs';
+      stereoConv = s.sconv || 0;
       applyFilter();
     }
     if (s.src && s.src !== loadedSrc) {
@@ -417,12 +446,14 @@
   function updateRoleUI() {
     const follower = role === 'follower';
     const haveVideo = Boolean(player && player.frameCount);
-    for (const el of [btnPlay, btnRestart, btnBack, btnFwd, btnJumpBack, btnJumpFwd, slider, rateSel, frameGoto, btnLoop]) {
+    for (const el of [btnPlay, btnRestart, btnBack, btnFwd, btnJumpBack, btnJumpFwd,
+                      slider, rateSel, frameGoto, btnLoop, btnIn, btnOut, btnClearRange]) {
       el.disabled = follower || !haveVideo;
     }
     if (gpuFilter) { // follower filters come from the master
       filterSel.disabled = follower;
       stereoLayoutSel.disabled = follower;
+      convInput.disabled = follower;
       btnSwapEyes.disabled = follower;
     }
   }
@@ -438,7 +469,8 @@
 
   /** Gate every transport control on "a file is loaded", then re-apply role limits. */
   function setControlsEnabled(on) {
-    for (const el of [btnPlay, btnRestart, btnBack, btnFwd, btnJumpBack, btnJumpFwd, slider, rateSel, frameGoto, btnLoop]) {
+    for (const el of [btnPlay, btnRestart, btnBack, btnFwd, btnJumpBack, btnJumpFwd,
+                      slider, rateSel, frameGoto, btnLoop, btnIn, btnOut, btnClearRange]) {
       el.disabled = !on;
     }
   }
@@ -604,7 +636,7 @@
   const FILTER_IDS = {
     none: 0, grayscale: 1, sepia: 2, invert: 3, swirl: 4,
     stereo: 5, anaglyph: 6, 'anaglyph-dubois': 7,
-    'left-eye': 8, 'right-eye': 9,
+    'left-eye': 8, 'right-eye': 9, difference: 10,
   };
   // Stereo filters read a packed eye pair, so they all take the layout menu
   // and the eye swap, and none use the amount slider. Only the interlace
@@ -612,7 +644,7 @@
   // scaling freely.
   const STEREO_KIND = {
     stereo: 'interlace', anaglyph: 'anaglyph', 'anaglyph-dubois': 'anaglyph',
-    'left-eye': 'eye', 'right-eye': 'eye',
+    'left-eye': 'eye', 'right-eye': 'eye', difference: 'diff',
   };
   // How the source packs the pair — orthogonal to the technique above, which
   // is why it is its own menu rather than a filter per combination.
@@ -625,6 +657,7 @@
   let filterName = 'none';
   let swapEyes = false;
   let stereoLayout = 'sbs';
+  let stereoConv = 0; // horizontal image translation, px of total separation
 
   (async () => {
     if (!GPUFilter.supported) { disableFilterUI('WebGPU not available in this browser'); return; }
@@ -639,6 +672,7 @@
   function disableFilterUI(why) {
     filterSel.disabled = true;
     stereoLayoutSel.disabled = true;
+    convInput.disabled = true;
     btnSwapEyes.disabled = true;
     filterSel.title = why;
   }
@@ -654,13 +688,20 @@
     const kind = STEREO_KIND[filterName] || null;
     stereoLayoutSel.value = stereoLayout;
     stereoLayoutSel.hidden = !kind;
-    btnSwapEyes.hidden = !kind;
+    convInput.value = String(stereoConv);
+    // Convergence moves the eyes relative to each other, which needs both of
+    // them on screen — for a single-eye view it would just pan the picture.
+    convWrap.hidden = !kind || kind === 'eye';
+    // |L-R| is symmetric, so the difference view is the one stereo mode eye
+    // swap cannot change — offering the button there would be a dead control.
+    btnSwapEyes.hidden = !kind || kind === 'diff';
     btnSwapEyes.classList.toggle('active', swapEyes);
     btnSwapEyes.setAttribute('aria-pressed', String(swapEyes));
     canvas.classList.toggle('stereo', kind === 'interlace');
     if (!player) return;
     if (gpuFilter && filterName !== 'none' && FILTER_IDS[filterName]) {
-      gpuFilter.set(FILTER_IDS[filterName], swapEyes, LAYOUT_IDS[stereoLayout]);
+      gpuFilter.set(FILTER_IDS[filterName], swapEyes,
+                    LAYOUT_IDS[stereoLayout], stereoConv);
       player.filterFn = (f) => gpuFilter.apply(f);
     } else {
       player.filterFn = null;
@@ -678,6 +719,14 @@
     applyFilter();
     broadcastNow(true);
   });
+  // 'input' so dragging the spinner or holding a key tracks live; the
+  // broadcast is rate-limited, as with any continuous control.
+  convInput.addEventListener('input', () => {
+    const v = Number(convInput.value);
+    stereoConv = Number.isFinite(v) ? v : 0;
+    applyFilter();
+    broadcastNow();
+  });
   btnSwapEyes.addEventListener('click', () => {
     swapEyes = !swapEyes;
     applyFilter();
@@ -692,6 +741,49 @@
     btnLoop.setAttribute('aria-pressed', String(on));
   }
   btnLoop.addEventListener('click', () => setLoop(!loopOn));
+
+  /**
+   * Reflect the loop range in the controls and the GOP strip. The clear
+   * button only exists while there is something to clear, the same way the
+   * stereo controls come and go with the filter that needs them.
+   */
+  function renderLoopRange() {
+    const hasIn = Boolean(player) && player.inPoint !== null;
+    const hasOut = Boolean(player) && player.outPoint !== null;
+    btnIn.classList.toggle('active', hasIn);
+    btnOut.classList.toggle('active', hasOut);
+    btnClearRange.hidden = !(hasIn || hasOut);
+    if (player && player.currentIndex >= 0) drawGopStrip(player.currentIndex);
+  }
+
+  /**
+   * Move one end of the loop range to the playhead. Pressing the same end
+   * again where it already sits clears it, so a range comes apart with the
+   * same key that built it. Turns looping on when a range first appears — a
+   * range is a statement of intent to repeat it.
+   */
+  function setRangeEnd(which) {
+    if (!player || !player.frameCount) return;
+    const isIn = which === 'in';
+    const already = isIn ? player.inPoint : player.outPoint;
+    const value = already === player.currentIndex ? null : player.currentIndex;
+    const wasEmpty = player.inPoint === null && player.outPoint === null;
+    player.setLoopRange(isIn ? value : player.inPoint,
+                        isIn ? player.outPoint : value);
+    if (wasEmpty && !loopOn &&
+        (player.inPoint !== null || player.outPoint !== null)) {
+      setLoop(true);
+    }
+    renderLoopRange();
+  }
+
+  btnIn.addEventListener('click', () => setRangeEnd('in'));
+  btnOut.addEventListener('click', () => setRangeEnd('out'));
+  btnClearRange.addEventListener('click', () => {
+    if (!player) return;
+    player.setLoopRange(null, null);
+    renderLoopRange();
+  });
 
   btnMute.addEventListener('click', () => {
     if (!audioEngine) return;
@@ -817,6 +909,8 @@
       case 'Home': e.preventDefault(); player.seekToFrame(0); break;
       case 'End': e.preventDefault(); player.seekToFrame(player.frameCount - 1); break;
       case 'l': case 'L': e.preventDefault(); setLoop(!loopOn); break;
+      case 'i': case 'I': e.preventDefault(); setRangeEnd('in'); break;
+      case 'o': case 'O': e.preventDefault(); setRangeEnd('out'); break;
     }
   });
 
@@ -883,6 +977,7 @@
       if (STEREO_KIND[filterName]) {
         if (stereoLayout !== 'sbs') q.push(`slayout=${stereoLayout}`);
         if (swapEyes) q.push('swapeyes');
+        if (stereoConv) q.push(`sconv=${stereoConv}`);
       }
     }
     if (desiredScreen !== null) q.push(`screen=${desiredScreen}`);
@@ -981,6 +1076,7 @@
   if (paramFilter && paramFilter in FILTER_IDS) {
     filterName = paramFilter;
     swapEyes = params.has('swapeyes');
+    stereoConv = Number(params.get('sconv')) || 0;
     applyFilter();
   }
   const paramSrc = params.get('src');
