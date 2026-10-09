@@ -57,8 +57,7 @@ class AudioEngine {
    * Adopt a track's decoder config and sample table. Returns false — never
    * throws — when the platform cannot decode it, which is a normal outcome
    * worth tolerating: the player then runs video off the wall clock instead
-   * of promoting audio to master. Logs the config it probed, since a refusal
-   * is usually one wrong field (channel count, missing description).
+   * of promoting audio to master.
    */
   async load(config, samples) {
     this.destroy(false);
@@ -66,15 +65,8 @@ class AudioEngine {
     if (!('AudioDecoder' in window)) return false;
     try {
       const support = await AudioDecoder.isConfigSupported(config);
-      console.info('AudioEngine config:', JSON.stringify({
-        codec: config.codec,
-        sampleRate: config.sampleRate,
-        numberOfChannels: config.numberOfChannels,
-        descriptionBytes: config.description ? config.description.length : 0,
-      }), '→ supported:', support.supported);
       if (!support.supported) return false;
     } catch (e) {
-      console.info('AudioEngine isConfigSupported threw:', e);
       return false;
     }
     this.config = config;

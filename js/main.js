@@ -13,7 +13,8 @@
   const frameTotalEl = $('frame-total');
   const mediaTimeEl = $('media-time');
 
-  const mediaSel = $('media-sel');
+  const btnOpen = $('btn-open');
+  const mediaMenu = $('media-menu');
   const fileInput = $('file-input');
   const btnPlay = $('btn-play');
   const btnRestart = $('btn-restart');
@@ -70,15 +71,56 @@
 
   if (!('VideoDecoder' in window)) {
     showError('This browser has no WebCodecs support. Use a current Chrome, Edge, or Safari 16.4+.');
-    mediaSel.disabled = true;
+    btnOpen.disabled = true;
   }
 
   /** Show a message in the error bar. Non-fatal: playback keeps whatever state it had. */
   function showError(msg) {
+    errorBox.hidden = false; // unhide first: an alert region announces text set after it is live
     errorBox.textContent = msg;
-    errorBox.hidden = false;
   }
   function clearError() { errorBox.hidden = true; }
+
+  /**
+   * Say something to screen readers without showing it. Only for transitions
+   * (file loaded, URL copied, master lost or back, role changed) — never for
+   * the sync readout, which rewrites itself with the RTT on every sample and
+   * would be read out continuously.
+   */
+  const announceEl = $('announce');
+  function announce(msg) {
+    announceEl.textContent = '';
+    setTimeout(() => { announceEl.textContent = msg; }, 50); // re-announce identical text
+  }
+
+  // ---- control hints --------------------------------------------------
+  //
+  // Every button's shortcut hint lives in `title`, which keyboard and touch
+  // users never see. Where the browser has interest invokers, each title moves
+  // into a popover="hint" element the button points at with `interestfor`,
+  // which shows on hover and focus and wires the description for assistive
+  // tech itself. Elsewhere the title stays. Selects cannot carry interestfor,
+  // so they keep title either way.
+  const hintFor = new Map();
+  if ('interestForElement' in HTMLButtonElement.prototype) {
+    let n = 0;
+    for (const el of document.querySelectorAll('button[title], a[title]')) {
+      const hint = document.createElement('div');
+      hint.id = `hint-${++n}`;
+      hint.popover = 'hint';
+      hint.className = 'hint';
+      hint.textContent = el.title;
+      el.removeAttribute('title');
+      el.setAttribute('interestfor', hint.id);
+      document.body.append(hint);
+      hintFor.set(el, hint);
+    }
+  }
+  /** Update a control's hint text, whichever mechanism carries it. */
+  function setHint(el, text) {
+    const hint = hintFor.get(el);
+    if (hint) hint.textContent = text; else el.title = text;
+  }
 
   // ---- readout --------------------------------------------------------
 
@@ -253,6 +295,7 @@
       frameGoto.max = i.sampleCount - 1;
       dropHint.hidden = true;
       stage.classList.add('loaded');
+      announce(`Loaded ${name}, ${i.sampleCount} frames`);
       setControlsEnabled(true);
       btnMute.disabled = !hasAudio;
       volSlider.disabled = !hasAudio;
@@ -289,6 +332,7 @@
     if (role !== 'solo') {
       sync = new SyncClient(role, {
         onState: (s) => {
+          if (masterLost) announce('Master is back');
           masterLost = false;
           if (role === 'follower') applyState(s);
           // A master that has not yet anchored anything adopts the ongoing
@@ -305,6 +349,7 @@
         },
         onMasterLost: () => {
           masterLost = true;
+          announce('Master lost: timeline frozen');
           renderSyncStatus(sync);
         },
       });
@@ -486,24 +531,64 @@
 
   const fmtSize = (b) => b >= 1e9 ? (b / 1e9).toFixed(1) + ' GB' : Math.round(b / 1e6) + ' MB';
 
-  /** Rebuild the picker: server media, then recent local files, then Browse…. */
-  function populateMediaSel() {
-    mediaSel.innerHTML = '';
-    mediaSel.append(new Option('Open video…', ''));
+  /**
+   * Rebuild the menu: server media, then recent local files, then Browse….
+   * Items are buttons with a data-action, dispatched by one click handler on
+   * the menu, so the list can be rebuilt freely while it is open.
+   */
+  function populateMediaMenu() {
+    // A rebuild while the menu is open (the server list arriving) must not
+    // drop keyboard focus on the floor: remember which item had it.
+    const items = [...mediaMenu.querySelectorAll('.menu-item')];
+    const focused = items.indexOf(document.activeElement);
+    mediaMenu.innerHTML = '';
+    // Each heading opens a role="group" that carries the same label, so
+    // screen readers hear "Server media" as context and the visible heading
+    // is not read twice.
+    let current = mediaMenu;
+    const group = (label) => {
+      current = document.createElement('div');
+      current.setAttribute('role', 'group');
+      current.setAttribute('aria-label', label);
+      const h = document.createElement('div');
+      h.className = 'menu-group';
+      h.textContent = label;
+      h.setAttribute('aria-hidden', 'true');
+      current.append(h);
+      mediaMenu.append(current);
+    };
+    const item = (label, action, meta) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'menu-item';
+      b.setAttribute('role', 'menuitem');
+      b.dataset.action = action;
+      const l = document.createElement('span');
+      l.className = 'label';
+      l.textContent = label;
+      b.append(l);
+      if (meta) {
+        const m = document.createElement('span');
+        m.className = 'meta';
+        m.textContent = meta;
+        b.append(m);
+      }
+      current.append(b);
+    };
     if (serverMedia.length) {
-      const g = document.createElement('optgroup');
-      g.label = 'Server media';
-      for (const m of serverMedia) g.append(new Option(`${m.src} · ${fmtSize(m.size)}`, 'src:' + m.src));
-      mediaSel.append(g);
+      group('Server media');
+      for (const m of serverMedia) item(m.src, 'src:' + m.src, fmtSize(m.size));
     }
     if (recents.length) {
-      const g = document.createElement('optgroup');
-      g.label = 'Recent local files';
-      for (const r of recents.slice(0, 8)) g.append(new Option(r.name, 'recent:' + r.name));
-      mediaSel.append(g);
+      group('Recent local files');
+      for (const r of recents.slice(0, 8)) item(r.name, 'recent:' + r.name);
     }
-    mediaSel.append(new Option('Browse…', 'browse'));
-    mediaSel.value = '';
+    group('Local file');
+    item('Browse…', 'browse');
+    if (focused >= 0) {
+      const rebuilt = mediaMenu.querySelectorAll('.menu-item');
+      rebuilt[Math.min(focused, rebuilt.length - 1)].focus();
+    }
   }
 
   /**
@@ -514,7 +599,12 @@
   async function refreshServerMedia() {
     try {
       const r = await fetch('media'); // relative: works behind path prefixes
-      if (r.ok) { serverMedia = await r.json(); populateMediaSel(); }
+      if (r.ok) {
+        const list = await r.json();
+        if (JSON.stringify(list) === JSON.stringify(serverMedia)) return; // unchanged: no rebuild
+        serverMedia = list;
+        populateMediaMenu();
+      }
     } catch (e) { /* solo static hosting has no /media — picker still works */ }
   }
 
@@ -540,7 +630,7 @@
         req.onerror = () => reject(req.error);
       });
       recents.sort((a, b) => b.usedAt - a.usedAt);
-      populateMediaSel();
+      populateMediaMenu();
     } catch (e) { recents = []; }
   }
 
@@ -605,18 +695,68 @@
     }
   }
 
-  mediaSel.addEventListener('pointerdown', () => refreshServerMedia());
-  mediaSel.addEventListener('change', () => {
-    const v = mediaSel.value;
-    mediaSel.value = '';
+  /** Run a menu action; the menu has already closed. */
+  function runMediaAction(v) {
     if (v === 'browse') openLocal();
     else if (v.startsWith('src:')) loadFromUrl(v.slice(4)).catch((e) => showError(String(e.message || e)));
     else if (v.startsWith('recent:')) openRecent(v.slice(7));
-  });
+  }
+
+  let menuOpen = false;
+  const hasPopover = 'popover' in HTMLElement.prototype;
+  if (hasPopover) {
+    // A top-layer popover ignores its parent, and the UA sheet centres it in
+    // the viewport. With anchor positioning the CSS places it under the
+    // button; otherwise place it here, and again on resize while open.
+    const anchored = CSS.supports('anchor-name: --a');
+    const placeMenu = () => {
+      if (anchored) return;
+      const r = btnOpen.getBoundingClientRect();
+      mediaMenu.style.left = `${Math.max(8, Math.min(r.left, innerWidth - mediaMenu.offsetWidth - 8))}px`;
+      mediaMenu.style.top = `${r.bottom + 4}px`;
+    };
+    mediaMenu.addEventListener('beforetoggle', (e) => {
+      if (e.newState === 'open') { refreshServerMedia(); populateMediaMenu(); }
+    });
+    mediaMenu.addEventListener('toggle', (e) => {
+      menuOpen = e.newState === 'open';
+      if (!menuOpen) return;
+      placeMenu();
+      mediaMenu.querySelector('.menu-item')?.focus();
+    });
+    window.addEventListener('resize', () => { if (menuOpen) placeMenu(); });
+    mediaMenu.addEventListener('click', (e) => {
+      const b = e.target.closest('.menu-item');
+      if (!b) return;
+      mediaMenu.hidePopover();
+      // Choosing with the mouse hands focus back to the stage so the transport
+      // keys work straight away; a keyboard pick leaves focus on the button.
+      if (pointerDroveInput) stage.focus({ preventScroll: true });
+      runMediaAction(b.dataset.action);
+    });
+    // role="menu" promises arrow-key movement; Escape and outside clicks are
+    // the popover's own light dismiss.
+    mediaMenu.addEventListener('keydown', (e) => {
+      const items = [...mediaMenu.querySelectorAll('.menu-item')];
+      if (!items.length) return;
+      const i = items.indexOf(document.activeElement);
+      let next = null;
+      if (e.key === 'ArrowDown') next = items[(i + 1) % items.length];
+      else if (e.key === 'ArrowUp') next = items[(i - 1 + items.length) % items.length];
+      else if (e.key === 'Home') next = items[0];
+      else if (e.key === 'End') next = items[items.length - 1];
+      if (next) { e.preventDefault(); next.focus(); }
+    });
+  } else {
+    // No popover API (and no polyfill, by the zero-dependency rule): the
+    // button goes straight to the file browser.
+    btnOpen.removeAttribute('popovertarget');
+    btnOpen.addEventListener('click', () => openLocal());
+  }
 
   refreshServerMedia();
   loadRecents();
-  populateMediaSel();
+  populateMediaMenu();
 
   btnPlay.addEventListener('click', () => player?.toggle());
   btnRestart.addEventListener('click', () => player?.seekToFrame(0));
@@ -938,7 +1078,7 @@
   }
   btnFs.addEventListener('click', toggleFullscreen);
   window.addEventListener('keydown', (e) => {
-    if ((e.key === 'f' || e.key === 'F') && !ownsKeyboard(e.target) && !e.metaKey && !e.ctrlKey) {
+    if ((e.key === 'f' || e.key === 'F') && !menuOpen && !ownsKeyboard(e.target) && !e.metaKey && !e.ctrlKey) {
       e.preventDefault();
       toggleFullscreen();
     }
@@ -956,7 +1096,7 @@
   window.addEventListener('pointerdown', () => { pointerDroveInput = true; }, true);
   window.addEventListener('keydown', () => { pointerDroveInput = false; }, true);
 
-  for (const menu of [mediaSel, filterSel, stereoLayoutSel, rateSel, screenSel, roleSel]) {
+  for (const menu of [filterSel, stereoLayoutSel, rateSel, screenSel, roleSel]) {
     menu.addEventListener('change', () => {
       if (pointerDroveInput) stage.focus({ preventScroll: true });
     });
@@ -964,7 +1104,7 @@
 
   // Keyboard transport.
   window.addEventListener('keydown', (e) => {
-    if (!player || role === 'follower' || ownsKeyboard(e.target)) return;
+    if (!player || role === 'follower' || menuOpen || ownsKeyboard(e.target)) return;
     // Space activates a focused button; stealing it would leave every button
     // unusable from the keyboard, since preventDefault suppresses the click.
     if (e.key === ' ' && e.target instanceof HTMLButtonElement) return;
@@ -1080,8 +1220,9 @@
 
   btnCopyUrl.addEventListener('click', async () => {
     const url = launchUrl();
-    btnCopyUrl.title = `Copy launch URL for another node\n${url}`;
+    setHint(btnCopyUrl, `Copy launch URL for another node\n${url}`);
     if (await copyText(url)) {
+      announce('Launch URL copied');
       btnCopyUrl.textContent = '✓';
       setTimeout(() => { btnCopyUrl.textContent = '🔗'; }, 1200);
     } else {

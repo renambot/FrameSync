@@ -3,6 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- The stage is dark by design: tell the browser so native pickers, spinners and
+     scrollbars render dark too, and opt into OS-level text scaling (rem sizes below). -->
+<meta name="color-scheme" content="dark">
+<meta name="text-scale" content="scale">
 <script>
   // Behind a path-prefix reverse proxy the app may be visited without a
   // trailing slash (e.g. /framesync) — the browser would then resolve every
@@ -31,6 +35,7 @@
     --amber-dim: rgba(255, 179, 0, 0.35);
     --mono: "SF Mono", "Cascadia Code", "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
     --sans: -apple-system, "Segoe UI", system-ui, sans-serif;
+    color-scheme: dark;   /* single dark scheme, by design */
   }
   * { box-sizing: border-box; margin: 0; }
   /* The UA's [hidden] rule is an author-stylesheet loser: any `display` we set
@@ -43,6 +48,7 @@
     background: var(--bg);
     color: var(--ink);
     font-family: var(--sans);
+    accent-color: var(--amber);   /* tints native range/checkbox/progress controls */
     display: flex;
     flex-direction: column;
     padding: 16px clamp(12px, 3vw, 40px);
@@ -62,7 +68,7 @@
   }
   header h1 {
     font-family: var(--mono);
-    font-size: 14px;
+    font-size: 0.875rem;
     font-weight: 600;
     letter-spacing: 0.22em;
     text-transform: uppercase;
@@ -71,7 +77,7 @@
   header h1 span { color: var(--muted); }
   #file-info {
     font-family: var(--mono);
-    font-size: 12px;
+    font-size: 0.75rem;
     color: var(--muted);
     overflow-wrap: anywhere;
   }
@@ -81,11 +87,11 @@
     align-items: center;
     gap: 10px;
   }
-  .sync-cluster select { padding: 4px 8px; font-size: 12px; }
-  #btn-copy-url { padding: 3px 8px; font-size: 13px; min-width: 0; }
+  .sync-cluster select { padding: 4px 8px; font-size: 0.75rem; }
+  #btn-copy-url { padding: 3px 8px; font-size: 0.8125rem; min-width: 0; }
   #sync-status {
     font-family: var(--mono);
-    font-size: 11px;
+    font-size: 0.6875rem;
     color: var(--amber);
     letter-spacing: 0.05em;
   }
@@ -105,7 +111,7 @@
     color: #ffb4a6;
     padding: 8px 12px;
     border-radius: 4px;
-    font-size: 13px;
+    font-size: 0.8125rem;
   }
 
   /* ------- stage ------- */
@@ -150,7 +156,7 @@
   #stage.loaded #screen { display: block; }
   #drop-hint {
     color: var(--muted);
-    font-size: 14px;
+    font-size: 0.875rem;
     text-align: center;
     padding: 24px;
     pointer-events: none;
@@ -175,7 +181,7 @@
     font-family: var(--mono);
   }
   #timecode {
-    font-size: clamp(34px, 6vw, 56px);
+    font-size: clamp(2.125rem, 6vw, 3.5rem);
     font-weight: 500;
     letter-spacing: 0.06em;
     color: var(--amber);
@@ -184,13 +190,13 @@
   }
   .readout-cell { display: flex; flex-direction: column; gap: 2px; }
   .readout-cell .label {
-    font-size: 10px;
+    font-size: 0.625rem;
     letter-spacing: 0.18em;
     text-transform: uppercase;
     color: var(--muted);
   }
   .readout-cell .value {
-    font-size: 20px;
+    font-size: 1.25rem;
     color: var(--ink);
     font-variant-numeric: tabular-nums;
   }
@@ -246,7 +252,7 @@
   }
   button, select, input[type="number"] {
     font-family: var(--mono);
-    font-size: 14px;
+    font-size: 0.875rem;
     color: var(--ink);
     background: #1b2128;
     border: 1px solid #2a333c;
@@ -272,7 +278,103 @@
     color: var(--range);
     background: rgba(61, 220, 132, 0.08);
   }
-  #media-sel { max-width: 320px; }
+  #btn-open { max-width: 320px; }
+  /* The media menu is a popover: a list of actions (server files, recent files,
+     browse), not a form value, so it is buttons in the top layer rather than a
+     <select> whose "selection" had to be reset after every pick. Top-layer
+     elements ignore their parent, so it is placed explicitly: by anchor
+     positioning where that exists, by main.js otherwise. */
+  #media-menu {
+    position: fixed;
+    inset: auto;
+    margin: 0;
+    min-width: 260px;
+    max-width: min(480px, calc(100vw - 24px));
+    max-height: min(60vh, 480px);
+    overflow: hidden auto;
+    padding: 6px;
+    background: var(--panel);
+    color: var(--ink);
+    border: 1px solid #2a333c;
+    border-radius: 6px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+    font-family: var(--mono);
+  }
+  @supports (anchor-name: --a) {
+    #btn-open { anchor-name: --open-video; }
+    #media-menu {
+      position-anchor: --open-video;
+      top: anchor(bottom);
+      left: anchor(left);
+      margin-top: 4px;
+      position-try-fallbacks: flip-block;
+    }
+  }
+  .menu-group {
+    padding: 8px 10px 4px;
+    font-size: 0.625rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .menu-item {
+    display: flex;
+    width: 100%;
+    justify-content: space-between;
+    gap: 16px;
+    text-align: left;
+    background: none;
+    border: 1px solid transparent;
+    padding: 7px 10px;
+    min-width: 0;
+  }
+  .menu-item .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .menu-item .meta { color: var(--muted); flex-shrink: 0; }
+  .menu-item:hover, .menu-item:focus-visible {
+    border-color: var(--amber);
+    color: var(--amber);
+    outline: none;
+  }
+  .menu-item:focus-visible { background: rgba(255, 179, 0, 0.08); }
+  .menu-empty { padding: 8px 10px; color: var(--muted); font-size: 0.8125rem; }
+
+  /* Control hints: popover="hint" elements shown on hover/focus via interestfor,
+     replacing title tooltips where the browser supports it (main.js creates
+     them). Anchored to their trigger implicitly. */
+  .hint {
+    position-area: block-end;
+    position-try-fallbacks: flip-block;
+    margin: 6px 0;
+    padding: 6px 10px;
+    max-width: 40ch;
+    background: var(--panel);
+    color: var(--ink);
+    border: 1px solid #2a333c;
+    border-radius: 4px;
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    white-space: pre-line;
+    overflow-wrap: anywhere;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+  }
+
+  /* Screen-reader-only announcements (file loaded, URL copied, master lost). */
+  .visually-hidden:where(:not(:focus-within, :active)) {
+    position: absolute !important;
+    clip-path: inset(50%) !important;
+    overflow: hidden !important;
+    width: 1px !important;
+    height: 1px !important;
+    margin: -1px !important;
+    padding: 0 !important;
+    border: 0 !important;
+    white-space: nowrap !important;
+  }
+
+  /* Touch-driven consoles: bigger targets. */
+  @media (pointer: coarse) {
+    button, select, input[type="number"] { min-block-size: 44px; }
+  }
   /* Source on the left (what the file IS), view settings on the right (how it
      is shown). Its own row rather than trailing #transport, so the split does
      not depend on where that row happens to wrap. */
@@ -283,35 +385,39 @@
     flex-wrap: wrap;
   }
   #source-row #filter-sel { margin-left: auto; }
-  #volume {
-    width: 90px;
-    appearance: none;
-    -webkit-appearance: none;
-    height: 22px;
-    background: transparent;
-    cursor: pointer;
-  }
+  /* The volume slider is the native control tinted by accent-color; the hand-drawn
+     track and thumb below only apply where accent-color does not exist. The
+     scrubber keeps its own styling regardless: its 4px track and 22px hit area
+     are geometry, which accent-color cannot provide. */
+  #volume { width: 90px; height: 22px; cursor: pointer; }
   #volume:disabled { cursor: default; opacity: 0.4; }
-  #volume::-webkit-slider-runnable-track {
-    height: 4px; background: var(--panel-edge); border-radius: 2px;
-  }
-  #volume::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    width: 12px; height: 12px; margin-top: -4px;
-    border-radius: 50%; background: var(--muted); border: none;
-  }
-  #volume::-moz-range-track {
-    height: 4px; background: var(--panel-edge); border-radius: 2px;
-  }
-  #volume::-moz-range-thumb {
-    width: 12px; height: 12px; border-radius: 50%;
-    background: var(--muted); border: none;
+  @supports not (accent-color: red) {
+    #volume {
+      appearance: none;
+      -webkit-appearance: none;
+      background: transparent;
+    }
+    #volume::-webkit-slider-runnable-track {
+      height: 4px; background: var(--panel-edge); border-radius: 2px;
+    }
+    #volume::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 12px; height: 12px; margin-top: -4px;
+      border-radius: 50%; background: var(--muted); border: none;
+    }
+    #volume::-moz-range-track {
+      height: 4px; background: var(--panel-edge); border-radius: 2px;
+    }
+    #volume::-moz-range-thumb {
+      width: 12px; height: 12px; border-radius: 50%;
+      background: var(--muted); border: none;
+    }
   }
   .goto {
     display: flex;
     align-items: center;
     gap: 6px;
-    font-size: 11px;
+    font-size: 0.6875rem;
     color: var(--muted);
     letter-spacing: 0.1em;
     text-transform: uppercase;
@@ -328,7 +434,7 @@
     gap: 16px;
     flex-wrap: wrap;
     font-family: var(--mono);
-    font-size: 11px;
+    font-size: 0.6875rem;
     color: var(--muted);
   }
 
@@ -358,7 +464,8 @@
     </span>
   </header>
 
-  <div id="error" hidden></div>
+  <div id="error" role="alert" hidden></div>
+  <div id="announce" class="visually-hidden" aria-live="polite"></div>
 
   <div id="stage" tabindex="-1">
     <canvas id="screen"></canvas>
@@ -414,7 +521,7 @@
       <button id="btn-clear-range" title="Clear the loop range"
               aria-label="Clear the loop range" hidden>⨯</button>
       <label class="goto">Go to frame
-        <input id="frame-goto" type="number" min="0" step="1" placeholder="0">
+        <input id="frame-goto" type="number" inputmode="numeric" min="0" step="1" placeholder="0">
       </label>
       <select id="screen-sel" title="Display used for fullscreen" aria-label="Fullscreen display">
         <option value="auto" selected>current screen</option>
@@ -425,9 +532,9 @@
              title="Volume" aria-label="Volume" disabled>
     </div>
     <div id="source-row">
-      <select id="media-sel" title="Open a video — server media, recent local files, or browse">
-        <option value="" selected>Open video…</option>
-      </select>
+      <button id="btn-open" popovertarget="media-menu"
+              title="Open a video: server media, recent local files, or browse">Open video…</button>
+      <div id="media-menu" popover="auto" role="menu" aria-label="Open video"></div>
       <input id="file-input" type="file" accept="video/mp4,video/quicktime,.mp4,.mov,.m4v" hidden>
       <select id="stereo-layout" title="Stereo source layout"
               aria-label="Stereo source layout">
@@ -459,7 +566,7 @@
              which depends on the file and the layout, so applyFilter() sets
              both once a file is loaded. Hard-coding a placeholder would only
              advertise a limit the code does not enforce. -->
-        <input id="stereo-conv" type="number" step="1" value="0"
+        <input id="stereo-conv" type="number" inputmode="numeric" step="1" value="0"
                title="Convergence: horizontal shift between the eyes, in pixels of total separation"
                aria-label="Stereo convergence in pixels">
       </label>

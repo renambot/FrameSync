@@ -60,8 +60,10 @@ server root — `GET /media` serves the listing; picking one loads by URL, so
 followers auto-load it too), **recent local files** (Chromium: File System
 Access handles persisted in the browser — reopening asks a one-click read
 permission per session; drag-and-dropped files join the list), and
-**Browse…** for the native file picker. Requires Chrome/Edge 94+,
-Safari 16.4+, or Firefox 130+.
+**Browse…** for the native file picker. The menu is a native popover
+(Chrome 116+, Safari 17+, Firefox 125+); in older browsers the button goes
+straight to Browse. Playback requires Chrome/Edge 94+, Safari 16.4+, or
+Firefox 130+.
 
 ## Why this is frame-exact
 
