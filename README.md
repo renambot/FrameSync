@@ -89,12 +89,15 @@ Only the **index** is read when a file opens: the `moov` box, which names
 every sample's timestamp, position and size. For a normal file that is the
 first megabyte or so; for a file whose `moov` sits at the end (no
 `-movflags +faststart`) MP4Box says where to jump, and the page jumps there.
-Sample bytes are then fetched **in 8 MB blocks as decoding reaches them** — a
-local file through `Blob.slice`, a server file through HTTP `Range` requests —
-and a dozen recent blocks stay cached, so stepping back and forth inside a GOP
-costs nothing and a seek costs one block. The memory cost of a file is its
-index plus about 100 MB, whatever the file's size; a 5 GB wall movie opens as
-quickly as a 5 MB clip. The footer counts the bytes fetched and the times the
+Sample bytes are then fetched **in aligned blocks as decoding reaches them** —
+a local file through `Blob.slice`, a server file through HTTP `Range`
+requests. A block holds about two seconds of the file (8 to 64 MB, from its
+bitrate), blocks are requested one at a time in order with the next one
+always in flight, about three seconds are kept ahead of the playhead, and
+about 160 MB of recent blocks stay cached, so stepping back and forth inside
+a GOP costs nothing and a seek costs one block. The memory cost of a file is
+its index plus that cache, whatever the file's size; a 5 GB wall movie opens
+as quickly as a 5 MB clip. The footer counts the bytes fetched and the times the
 decoder had to wait for data. A wait while playing behaves like any decoder
 stall: under the wall clock the clock rebases, under the audio or sync clock
 frames are skipped and counted, so a slow link shows up as pacing skips.

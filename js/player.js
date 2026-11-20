@@ -81,7 +81,6 @@ class FramePlayer {
 
     this.MAX_QUEUE = 16;        // decoded frames held ahead of the playhead
     this.MAX_DECODE_QUEUE = 12; // chunks in flight inside the decoder
-    this.READ_AHEAD = 90;        // samples ahead of the feed to keep fetched (a few GOPs)
   }
 
   /** Give the player an AudioEngine; its clock masters playback at 1×. */
@@ -186,7 +185,12 @@ class FramePlayer {
           () => { this.waitingData = false; this._fillQueue(); this._emitStats(); },
           // A failed fetch must not strand a _nextFrame() waiter: report it
           // and wake them so the player surfaces an error instead of freezing.
-          (e) => { this.waitingData = false; this.cb.onError?.(e); this._wake(); this._emitStats(); },
+          (e) => {
+            this.waitingData = false;
+            // An aborted read-ahead is not an error: a newer request superseded it.
+            if (!(e && e.name === 'AbortError')) this.cb.onError?.(e);
+            this._wake(); this._emitStats();
+          },
         );
         this._emitStats();
         return;
@@ -198,9 +202,8 @@ class FramePlayer {
         duration: s.duration,
         data,
       }));
-      // Read ahead: keep the next block arriving while this one decodes.
-      const ahead = this.samples[Math.min(this.feedPos + this.READ_AHEAD, this.samples.length - 1)];
-      if (ahead && !this.reader.get(ahead)) this.reader.prefetch(ahead).catch(() => {});
+      // Read ahead: keep an unbroken run of blocks arriving behind this one.
+      this.reader.ensureAhead(s);
     }
     if (this.feedPos >= this.samples.length && !this.endFlushed && !this.flushing) {
       this.flushing = true;

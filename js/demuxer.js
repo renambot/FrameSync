@@ -105,7 +105,7 @@ async function demuxMP4(source) {
     audio: audioTrack && audioSamples.length
       ? { config: audioConfig, samples: audioSamples }
       : null,
-    reader: new SampleReader(source),
+    reader: new SampleReader(source, { bytesPerSec: durationSec > 0 ? source.size / durationSec : 0 }),
     info: {
       codec: videoTrack.codec,
       width: videoTrack.video.width,
