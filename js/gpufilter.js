@@ -43,7 +43,12 @@ class GPUFilter {
     try {
       const adapter = await navigator.gpu.requestAdapter();
       if (!adapter) return false;
-      this.device = await adapter.requestDevice();
+      // The default device caps textures at 8192 px a side, which a 13440-wide
+      // side-by-side wall movie exceeds. Ask for everything the GPU can do
+      // (16384 on Apple GPUs); frames beyond even that go through the staging
+      // path in apply().
+      this.maxDim = adapter.limits.maxTextureDimension2D;
+      this.device = await adapter.requestDevice({ requiredLimits: { maxTextureDimension2D: this.maxDim } });
       this.device.lost.then(() => { this.ready = false; });
 
       this.canvas = new OffscreenCanvas(16, 16);
@@ -51,14 +56,23 @@ class GPUFilter {
       const format = navigator.gpu.getPreferredCanvasFormat();
       this.ctx.configure({ device: this.device, format, alphaMode: 'opaque' });
 
-      const shader = this.device.createShaderModule({ code: GPUFilter.WGSL });
-      this.pipeline = this.device.createRenderPipeline({
-        layout: 'auto',
-        vertex: { module: shader, entryPoint: 'vs' },
-        fragment: { module: shader, entryPoint: 'fs', targets: [{ format }] },
-        primitive: { topology: 'triangle-list' },
-      });
+      // One shader, two bindings: the zero-copy path samples the VideoFrame
+      // as an external texture; the staging path (frames too large to import)
+      // samples an ordinary 2D texture the frame's tiles were copied into.
+      const make = (texType) => {
+        const shader = this.device.createShaderModule({ code: GPUFilter.WGSL.replace('__TEX__', texType) });
+        return this.device.createRenderPipeline({
+          layout: 'auto',
+          vertex: { module: shader, entryPoint: 'vs' },
+          fragment: { module: shader, entryPoint: 'fs', targets: [{ format }] },
+          primitive: { topology: 'triangle-list' },
+        });
+      };
+      this.pipeline = make('texture_external');
       this.bgl = this.pipeline.getBindGroupLayout(0);
+      this.pipeline2d = make('texture_2d<f32>');
+      this.bgl2d = this.pipeline2d.getBindGroupLayout(0);
+      this.staging = null; // OffscreenCanvas + GPUTexture pair for oversized frames
       this.sampler = this.device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
       this.ubuf = this.device.createBuffer({
         size: 48,
@@ -124,7 +138,12 @@ class GPUFilter {
       return { rect: { x: v.x, y: v.y, w: v.w, h: v.h }, pxW: eye.w * v.w, pxH: eye.h * v.h };
     }
     const grid = w.grid || { cols: 1, rows: 1 };
-    const wallA = (w.monitorAspect || 16 / 9) * grid.cols / grid.rows;
+    // The full side-by-side output is a double-wide signal: each eye lands on
+    // half of the display, so the aspect an eye is fitted into is half the
+    // display's. The squished output is un-squeezed by the display, so there
+    // an eye sees the display's whole aspect.
+    const monA = (w.monitorAspect || 16 / 9) / (this.mode === GPUFilter.MODE_SBS ? 2 : 1);
+    const wallA = monA * grid.cols / grid.rows;
     const vidA = eye.w / eye.h;
     let vr;
     if (vidA > wallA) { const h = wallA / vidA; vr = { x: 0, y: (1 - h) / 2, w: 1, h }; }
@@ -173,6 +192,45 @@ class GPUFilter {
       : { w, h };
   }
 
+  /**
+   * Draw each eye's tile out of an oversized frame into a staging canvas,
+   * packed side by side at native size (left tile, then right tile), and
+   * copy that into a GPU texture the shader can sample. Parts of the tile
+   * that reach past the eye (an aspect-fit bar) stay black. Returns the
+   * texture; the canvas and texture are kept and reused while the size holds.
+   */
+  _stageTiles(frame, tile) {
+    const eye = this._eyeSize(frame);
+    const r = tile.rect;
+    const tw = Math.max(1, Math.round(eye.w * r.w)), th = Math.max(1, Math.round(eye.h * r.h));
+    if (!this.staging || this.staging.w !== tw * 2 || this.staging.h !== th) {
+      if (this.staging) this.staging.tex.destroy();
+      const canvas = new OffscreenCanvas(tw * 2, th);
+      const tex = this.device.createTexture({
+        size: [tw * 2, th], format: 'rgba8unorm',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+      });
+      this.staging = { w: tw * 2, h: th, canvas, ctx: canvas.getContext('2d'), tex };
+    }
+    const { canvas, ctx, tex } = this.staging;
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const sw = r.w * eye.w, sh = r.h * eye.h;      // the tile in eye pixels
+    const sx0 = r.x * eye.w, sy0 = r.y * eye.h;    // may be negative under an aspect fit
+    for (let k = 0; k < 2; k++) {
+      const ox = this.layout === GPUFilter.LAYOUT_TB ? 0 : k * eye.w;
+      const oy = this.layout === GPUFilter.LAYOUT_TB ? k * eye.h : 0;
+      const cx0 = Math.max(0, sx0), cy0 = Math.max(0, sy0);
+      const cx1 = Math.min(eye.w, sx0 + sw), cy1 = Math.min(eye.h, sy0 + sh);
+      if (cx1 <= cx0 || cy1 <= cy0) continue;
+      ctx.drawImage(frame, ox + cx0, oy + cy0, cx1 - cx0, cy1 - cy0,
+        k * tw + (cx0 - sx0) * (tw / sw), (cy0 - sy0) * (th / sh),
+        (cx1 - cx0) * (tw / sw), (cy1 - cy0) * (th / sh));
+    }
+    this.device.queue.copyExternalImageToTexture({ source: canvas }, { texture: tex }, [canvas.width, canvas.height]);
+    return tex;
+  }
+
   /** Filter one frame; returns the drawable canvas, or null to bypass. */
   apply(frame) {
     this.viewportApplied = false;
@@ -201,17 +259,56 @@ class GPUFilter {
       this.uf32[10] = tile ? eyeW / tile.rect.w : eyeW;
       this.uu32[11] = tile ? 1 : 0;
       this.viewportApplied = Boolean(tile);
-      this.device.queue.writeBuffer(this.ubuf, 0, this.uarr);
 
-      const ext = this.device.importExternalTexture({ source: frame });
-      const bindGroup = this.device.createBindGroup({
-        layout: this.bgl,
-        entries: [
-          { binding: 0, resource: this.sampler },
-          { binding: 1, resource: ext },
-          { binding: 2, resource: { buffer: this.ubuf } },
-        ],
-      });
+      // Frames wider or taller than the GPU's texture limit cannot be imported
+      // whole. For a tiled side-by-side output the tile of each eye is all
+      // that is needed, so those two crops are drawn (2D canvas, GPU-side) into
+      // a staging frame packed side by side, which does fit, and the shader
+      // then runs on that with the tile already cut. Other modes have no such
+      // way out and bypass the stage for this frame, unfiltered but shown.
+      const oversized = frame.displayWidth > this.maxDim || frame.displayHeight > this.maxDim;
+      let bindGroup, pipeline = this.pipeline;
+      if (oversized) {
+        // The staging frame (two tiles side by side) must fit the limit too:
+        // a tall or wide crop of a huge frame can still be too big.
+        const eye = tile ? this._eyeSize(frame) : null;
+        const fits = tile && Math.round(eye.w * tile.rect.w) * 2 <= this.maxDim && Math.round(eye.h * tile.rect.h) <= this.maxDim;
+        if (!tile || this.layout === GPUFilter.LAYOUT_HALF_SBS || !fits) {
+          if (!this.warnedSize) {
+            this.warnedSize = true;
+            console.warn(`Frame ${frame.displayWidth}×${frame.displayHeight} exceeds this GPU's texture limit (${this.maxDim}); showing it unfiltered. Side-by-side output with a wall tile still works.`);
+          }
+          this.viewportApplied = false;
+          return null;
+        }
+        const tex = this._stageTiles(frame, tile);
+        // The staging frame is a plain side-by-side pair of the tiles at
+        // native size: sample it as such, with no further rect.
+        this.uu32[4] = GPUFilter.LAYOUT_SBS;
+        this.uf32[6] = 0; this.uf32[7] = 0; this.uf32[8] = 1; this.uf32[9] = 1;
+        this.uf32[10] = eyeW; // in the staging frame the tile IS the whole eye
+        this.uu32[11] = 0;
+        pipeline = this.pipeline2d;
+        bindGroup = this.device.createBindGroup({
+          layout: this.bgl2d,
+          entries: [
+            { binding: 0, resource: this.sampler },
+            { binding: 1, resource: tex.createView() },
+            { binding: 2, resource: { buffer: this.ubuf } },
+          ],
+        });
+      } else {
+        const ext = this.device.importExternalTexture({ source: frame });
+        bindGroup = this.device.createBindGroup({
+          layout: this.bgl,
+          entries: [
+            { binding: 0, resource: this.sampler },
+            { binding: 1, resource: ext },
+            { binding: 2, resource: { buffer: this.ubuf } },
+          ],
+        });
+      }
+      this.device.queue.writeBuffer(this.ubuf, 0, this.uarr);
       const enc = this.device.createCommandEncoder();
       const pass = enc.beginRenderPass({
         colorAttachments: [{
@@ -221,7 +318,7 @@ class GPUFilter {
           clearValue: { r: 0, g: 0, b: 0, a: 1 },
         }],
       });
-      pass.setPipeline(this.pipeline);
+      pass.setPipeline(pipeline);
       pass.setBindGroup(0, bindGroup);
       pass.draw(3);
       pass.end();
@@ -251,7 +348,7 @@ GPUFilter.WGSL = /* wgsl */`
 struct Params { mode: u32, w: f32, h: f32, swap: u32, pack: u32, conv: f32,
                 rx: f32, ry: f32, rw: f32, rh: f32, ew: f32, tiled: u32 };
 @group(0) @binding(0) var samp: sampler;
-@group(0) @binding(1) var tex: texture_external;
+@group(0) @binding(1) var tex: __TEX__;
 @group(0) @binding(2) var<uniform> P: Params;
 
 @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {

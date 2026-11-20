@@ -292,6 +292,7 @@
       // Handy for sync experiments from the console / other pages.
       window.vsPlayer = player;
       window.vsAudio = audioEngine;
+      window.vsFilter = gpuFilter;
 
       const i = demuxed.info;
       const keyframes = demuxed.video.samples.filter((s) => s.isKey).length;

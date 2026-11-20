@@ -253,7 +253,11 @@ there the tile is cut *inside each eye* before the pair is repacked: on a
 the picture in both eyes on one display and `tile=1,0,2,1` the right half on
 the other, each still frame-packed for its display. The aspect fit of
 `fit=contain` is applied per eye the same way, so the letterbox bars land
-where every other node puts them. The filter choice, layout, and eye swap all
+where every other node puts them; for the full side-by-side output each eye
+is fitted into half the display's aspect, since that double-wide signal
+gives each eye half the screen. With `fit=fill` the output is simply the
+tile of each eye at native size: a 2×1 wall of a 13440×1890 file gives
+6720×1890 per display. The filter choice, layout, and eye swap all
 ride in the synced state, so one master drives a whole 3D wall
 (`?filter=stereo&slayout=tb&swapeyes` for kiosk launches).
 
@@ -556,8 +560,12 @@ box=1:boxcolor=black@0.7:boxborderw=20" \
 - Stereo sources must be frame-packed in one of the three layouts above
   (anything else — interleaved-per-frame, MVC, separate tracks — is not
   handled), and the whole packed frame is decoded on every node even when
-  only one eye is shown. Beyond roughly 8192 px in either axis hardware
-  decoders refuse the stream, so split per-eye files and sync them instead.
+  only one eye is shown. Frames wider than the GPU's texture limit (16384 px
+  on Apple GPUs, 8192 on many others) cannot be imported into WebGPU whole:
+  the side-by-side outputs on a wall tile still work, because each eye's tile
+  is cut first and only those crops are uploaded, while every other filter
+  shows such a frame unfiltered. Hardware decoders have limits of their own,
+  typically around 8192 px, past which the stream will not decode at all.
 - The Dubois anaglyph uses one published sRGB coefficient set applied in
   gamma-encoded space (as the reference implementations do); several
   calibrations exist for different display primaries and glasses. Identical
