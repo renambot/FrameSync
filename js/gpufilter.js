@@ -24,6 +24,8 @@ class GPUFilter {
     this.swapEyes = false;
     this.convergence = 0;
     this.layout = 0;
+    this.wall = null;            // {viewport, fit, grid, monitorAspect} for per-eye tiling
+    this.viewportApplied = false; // true after apply() cropped the tile inside each eye
   }
 
   /** Cheap pre-check so the UI can disable itself without building a device. */
@@ -59,12 +61,13 @@ class GPUFilter {
       this.bgl = this.pipeline.getBindGroupLayout(0);
       this.sampler = this.device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
       this.ubuf = this.device.createBuffer({
-        size: 32,
+        size: 48,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       });
-      this.uarr = new ArrayBuffer(32);
-      this.uu32 = new Uint32Array(this.uarr); // [0] mode, [3] swap, [4] layout
-      this.uf32 = new Float32Array(this.uarr); // [1] w, [2] h, [5] convergence
+      this.uarr = new ArrayBuffer(48);
+      this.uu32 = new Uint32Array(this.uarr); // [0] mode, [3] swap, [4] layout, [11] tiled
+      this.uf32 = new Float32Array(this.uarr); // [1] w, [2] h, [5] convergence,
+                                               // [6..9] eye rect x,y,w,h, [10] whole-eye output width
 
       this.ready = true;
       return true;
@@ -92,6 +95,47 @@ class GPUFilter {
   /** True while the mode reads a packed stereo pair (modes 5..12). */
   get isStereo() { return this.mode >= 5 && this.mode <= 12; }
 
+  /** True for the two outputs that hold both eyes (the side-by-side pair). */
+  get emitsBothEyes() { return this.mode === GPUFilter.MODE_SBS || this.mode === GPUFilter.MODE_SBS_SQUISHED; }
+
+  /**
+   * Wall geometry for per-eye tiling: the node's viewport (a tile or crop
+   * rect, normalized), the fit mode, the wall grid, and the monitor aspect.
+   * Null means no tiling. Only the side-by-side outputs use it: their output
+   * holds both eyes, so a crop applied afterwards would take one eye instead
+   * of one slice of the picture — the slice has to be cut inside each eye
+   * before the pair is repacked. Every other mode emits a single picture
+   * that the player crops as usual.
+   */
+  setWall(wall) { this.wall = wall; }
+
+  /**
+   * Where this node's slice sits inside one eye, and how big it is in output
+   * pixels. 'fill' takes the viewport as a straight crop of the eye. 'contain'
+   * mirrors FramePlayer's wall fit: the eye picture is aspect-fitted into the
+   * whole wall, so the slice may reach past the picture (rect outside 0..1),
+   * which the shader paints black — the same letterbox every node computes.
+   */
+  _eyeTile(eye) {
+    const w = this.wall;
+    if (!w || !w.viewport || !this.emitsBothEyes) return null;
+    const v = w.viewport;
+    if (w.fit !== 'contain') {
+      return { rect: { x: v.x, y: v.y, w: v.w, h: v.h }, pxW: eye.w * v.w, pxH: eye.h * v.h };
+    }
+    const grid = w.grid || { cols: 1, rows: 1 };
+    const wallA = (w.monitorAspect || 16 / 9) * grid.cols / grid.rows;
+    const vidA = eye.w / eye.h;
+    let vr;
+    if (vidA > wallA) { const h = wallA / vidA; vr = { x: 0, y: (1 - h) / 2, w: 1, h }; }
+    else { const ww = vidA / wallA; vr = { x: (1 - ww) / 2, y: 0, w: ww, h: 1 }; }
+    return {
+      rect: { x: (v.x - vr.x) / vr.w, y: (v.y - vr.y) / vr.h, w: v.w / vr.w, h: v.h / vr.h },
+      pxW: (eye.w / vr.w) * v.w,
+      pxH: (eye.h / vr.h) * v.h,
+    };
+  }
+
   /**
    * Output size for the current mode. A stereo mode emits ONE eye, so it
    * drops the packing axis back to native: full side-by-side halves the
@@ -113,11 +157,25 @@ class GPUFilter {
     // source comes back to the frame's own size (a re-pack of itself). The
     // squished one keeps a single eye's width and fits the pair inside it, so
     // each eye is squeezed 2x — the frame-packed shape a 3D TV expects in.
-    return this.mode === GPUFilter.MODE_SBS ? { w: eye.w * 2, h: eye.h } : eye;
+    // With a wall tile, each eye contributes its slice instead of itself.
+    const tile = this._eyeTile(eye);
+    const one = tile
+      ? { w: Math.max(1, Math.round(tile.pxW)), h: Math.max(1, Math.round(tile.pxH)) }
+      : eye;
+    return this.mode === GPUFilter.MODE_SBS ? { w: one.w * 2, h: one.h } : one;
+  }
+
+  /** One eye's native geometry for the current layout. */
+  _eyeSize(frame) {
+    const w = frame.displayWidth, h = frame.displayHeight;
+    return this.layout === GPUFilter.LAYOUT_SBS ? { w: Math.max(1, w >> 1), h }
+      : this.layout === GPUFilter.LAYOUT_TB ? { w, h: Math.max(1, h >> 1) }
+      : { w, h };
   }
 
   /** Filter one frame; returns the drawable canvas, or null to bypass. */
   apply(frame) {
+    this.viewportApplied = false;
     if (!this.ready || this.mode === 0) return null;
     const { w, h } = this.outputSize(frame);
     if (this.canvas.width !== w || this.canvas.height !== h) {
@@ -131,6 +189,18 @@ class GPUFilter {
       this.uu32[3] = this.swapEyes ? 1 : 0;
       this.uu32[4] = this.layout; // shader field is 'pack' — 'layout' is reserved in WGSL
       this.uf32[5] = this.convergence;
+      // Per-eye tile for the side-by-side outputs, and the width one whole
+      // eye would have in output pixels, which the convergence shift is
+      // stated against (a tile shows only part of that width).
+      const eyeW = this.emitsBothEyes ? w / 2 : w; // both side-by-side outputs show two eyes across w
+      const tile = this.emitsBothEyes ? this._eyeTile(this._eyeSize(frame)) : null;
+      this.uf32[6] = tile ? tile.rect.x : 0;
+      this.uf32[7] = tile ? tile.rect.y : 0;
+      this.uf32[8] = tile ? tile.rect.w : 1;
+      this.uf32[9] = tile ? tile.rect.h : 1;
+      this.uf32[10] = tile ? eyeW / tile.rect.w : eyeW;
+      this.uu32[11] = tile ? 1 : 0;
+      this.viewportApplied = Boolean(tile);
       this.device.queue.writeBuffer(this.ubuf, 0, this.uarr);
 
       const ext = this.device.importExternalTexture({ source: frame });
@@ -178,7 +248,8 @@ GPUFilter.MODE_SBS = 11;         // full: two eye-widths across
 GPUFilter.MODE_SBS_SQUISHED = 12; // squished: one eye-width, pair squeezed in
 
 GPUFilter.WGSL = /* wgsl */`
-struct Params { mode: u32, w: f32, h: f32, swap: u32, pack: u32, conv: f32 };
+struct Params { mode: u32, w: f32, h: f32, swap: u32, pack: u32, conv: f32,
+                rx: f32, ry: f32, rw: f32, rh: f32, ew: f32, tiled: u32 };
 @group(0) @binding(0) var samp: sampler;
 @group(0) @binding(1) var tex: texture_external;
 @group(0) @binding(2) var<uniform> P: Params;
@@ -300,10 +371,21 @@ fn eyeUV(uv: vec2f, rightEye: bool, eyeOutW: f32) -> vec2f {
   // the maths below is written in terms of that width rather than assuming
   // it. These are the two modes that emit both eyes, so an eye spans half
   // the output rather than all of it — hence P.w * 0.5.
+  //
+  // On a wall tile the slice is cut here, inside each eye, before the
+  // repack: e maps the output's half onto the tile's rect within the eye.
+  // Under an aspect fit the rect can reach past the eye, and that part is
+  // black — the letterbox, computed per node exactly as the player does it.
+  // P.ew is the whole eye's width in output pixels, which the convergence
+  // shift and the edge inset in eyeUV are stated against.
   if (P.mode == 11u || P.mode == 12u) {
     let right = uv.x >= 0.5;
-    let e = vec2f(fract(uv.x * 2.0), uv.y);
-    return vec4f(textureSampleBaseClampToEdge(tex, samp, eyeUV(e, right, P.w * 0.5)).rgb, 1.0);
+    var e = vec2f(fract(uv.x * 2.0), uv.y);
+    if (P.tiled != 0u) {
+      e = vec2f(P.rx, P.ry) + e * vec2f(P.rw, P.rh);
+      if (e.x < 0.0 || e.x > 1.0 || e.y < 0.0 || e.y > 1.0) { return vec4f(0.0, 0.0, 0.0, 1.0); }
+    }
+    return vec4f(textureSampleBaseClampToEdge(tex, samp, eyeUV(e, right, P.ew)).rgb, 1.0);
   }
 
   // Geometry filters warp the sample coordinate before any color work.

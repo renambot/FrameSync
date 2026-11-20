@@ -40,6 +40,7 @@ class FramePlayer {
     this.tsToIndex = new Map(); // µs timestamp -> presentation index
 
     this.filterFn = null; // (VideoFrame) => drawable | null — GPU filter stage
+    this.filterOwnsViewport = null; // () => true when the stage already cut this node's tile
     this.viewport = null; // {x,y,w,h} normalized tile/crop rect for walls
     this.fitMode = 'fill';   // 'fill': viewport crops the source directly;
                              // 'contain': viewport is a wall-space rect and
@@ -104,6 +105,7 @@ class FramePlayer {
     this.samples = samples;
     this.reader = reader; // where sample bytes come from, block by block
     this.dataWaits = 0;   // times the feed loop found no bytes yet (stats)
+    this.waitingData = false; // true while the feed is blocked on a fetch
 
     // Presentation order: B-frames arrive from the demuxer in decode order,
     // so sort indices by composition timestamp to get the true frame list.
@@ -179,11 +181,12 @@ class FramePlayer {
       const data = this.reader.get(s);
       if (!data) {
         this.dataWaits++;
+        this.waitingData = true;
         this.reader.prefetch(s).then(
-          () => this._fillQueue(),
+          () => { this.waitingData = false; this._fillQueue(); this._emitStats(); },
           // A failed fetch must not strand a _nextFrame() waiter: report it
           // and wake them so the player surfaces an error instead of freezing.
-          (e) => { this.cb.onError?.(e); this._wake(); },
+          (e) => { this.waitingData = false; this.cb.onError?.(e); this._wake(); this._emitStats(); },
         );
         this._emitStats();
         return;
@@ -247,7 +250,10 @@ class FramePlayer {
     // follows what is actually being drawn, not the decoded frame.
     const src = this.filterFn ? (this.filterFn(frame) || frame) : frame;
     const W = src.displayWidth || src.width, H = src.displayHeight || src.height;
-    const v = this.viewport;
+    // A side-by-side stereo output on a wall tile has already cut the tile
+    // inside each eye (cropping its both-eye output here would take one eye
+    // instead): blit it whole.
+    const v = (src !== frame && this.filterOwnsViewport && this.filterOwnsViewport()) ? null : this.viewport;
 
     if (v && this.fitMode === 'contain') {
       const grid = this.wallGrid || { cols: 1, rows: 1 };
@@ -691,6 +697,7 @@ class FramePlayer {
       dropped: this.droppedForPacing,
       clock: this.externalClock ? 'sync' : this.audioLive ? 'audio' : 'wall',
       dataWaits: this.dataWaits,
+      waitingData: this.waitingData,
       fetchedBytes: this.reader ? this.reader.stats.bytes : 0,
     });
   }

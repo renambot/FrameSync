@@ -245,10 +245,17 @@ Techniques:
 The anaglyphs, the single-eye views and the difference all need no pixel
 alignment, so they scale and letterbox freely, unlike the interlace.
 
-Stereo runs before the crop/fit stage, so it composes with tiling — and the
-filter choice, layout, and eye swap all ride in the synced state, so one
-master drives a whole 3D wall (`?filter=stereo&slayout=tb&swapeyes` for
-kiosk launches).
+Stereo runs before the crop/fit stage, so it composes with tiling: the
+single-picture outputs (interlace, anaglyphs, one eye, difference) are tiled
+like any other video. The two **side-by-side outputs hold both eyes**, so
+there the tile is cut *inside each eye* before the pair is repacked: on a
+2×1 wall of active-stereo displays, `tile=0,0,2,1` shows the left half of
+the picture in both eyes on one display and `tile=1,0,2,1` the right half on
+the other, each still frame-packed for its display. The aspect fit of
+`fit=contain` is applied per eye the same way, so the letterbox bars land
+where every other node puts them. The filter choice, layout, and eye swap all
+ride in the synced state, so one master drives a whole 3D wall
+(`?filter=stereo&slayout=tb&swapeyes` for kiosk launches).
 
 **Pixel alignment is everything for the interlace**: interleaving only works if output row
 N lands on physical display row N. Any scaling destroys the effect, so the

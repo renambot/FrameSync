@@ -6,6 +6,8 @@
   const stage = $('stage');
   const canvas = $('screen');
   const dropHint = $('drop-hint');
+  const spinner = $('spinner');
+  let loading = false; // a file's index is being read: the big spinner owns the stage
   const errorBox = $('error');
 
   const tcEl = $('timecode');
@@ -158,6 +160,12 @@
 
   /** Player callback: pipeline health line (queue depths, pacing drops, active clock). */
   function onStats(s) {
+    // Small corner spinner while the decoder waits for sample data; the big
+    // one during a load takes precedence.
+    if (!loading) {
+      spinner.classList.add('small');
+      spinner.hidden = !s.waitingData;
+    }
     const mb = (s.fetchedBytes || 0) / 1e6;
     statsEl.textContent =
       `decode queue ${s.decodeQueue} · buffered ${s.buffered} · ` +
@@ -253,6 +261,9 @@
     clearError();
     dropHint.hidden = false;
     dropHint.textContent = 'Reading the index of ' + name + '…';
+    loading = true;
+    spinner.classList.remove('small');
+    spinner.hidden = false;
     try {
       const demuxed = await demuxMP4(source);
       meta = demuxed;
@@ -319,6 +330,9 @@
       dropHint.hidden = false;
       dropHint.textContent = 'Drop an MP4 here, or choose a file.';
       showError(String(err.message || err));
+    } finally {
+      loading = false;
+      spinner.hidden = true;
     }
   }
 
@@ -880,9 +894,16 @@
     if (gpuFilter && filterName !== 'none' && FILTER_IDS[filterName]) {
       gpuFilter.set(FILTER_IDS[filterName], swapEyes,
                     LAYOUT_IDS[stereoLayout], stereoConv);
+      // The side-by-side outputs cut a wall tile inside each eye themselves.
+      gpuFilter.setWall(viewport ? {
+        viewport, fit: viewportFit, grid: wallGrid,
+        monitorAspect: (window.screen && screen.width && screen.height) ? screen.width / screen.height : 16 / 9,
+      } : null);
       player.filterFn = (f) => gpuFilter.apply(f);
+      player.filterOwnsViewport = () => gpuFilter.viewportApplied;
     } else {
       player.filterFn = null;
+      player.filterOwnsViewport = null;
     }
     if (!player.playing) player.redraw();
   }

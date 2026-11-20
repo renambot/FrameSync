@@ -438,8 +438,30 @@
     color: var(--muted);
   }
 
+  /* Waiting indicator on the stage: centred and large while a file's index is
+     read, small in a corner while playback waits for a block of sample data
+     to arrive. With reduced motion it still appears, just without spinning. */
+  #spinner {
+    position: absolute;
+    inset: 0;
+    margin: auto;
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    border: 4px solid rgba(255, 179, 0, 0.18);
+    border-top-color: var(--amber);
+    pointer-events: none;
+  }
+  #spinner.small {
+    inset: auto 14px 14px auto;
+    width: 22px;
+    height: 22px;
+    border-width: 3px;
+  }
   @media (prefers-reduced-motion: no-preference) {
     #timecode { transition: text-shadow 0.3s; }
+    #spinner { animation: spin 0.9s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
   }
 </style>
 </head>
@@ -471,6 +493,7 @@
     <canvas id="screen"></canvas>
     <p id="drop-hint">Drop an MP4 here, or choose a file.<br>
       <small>Decoding runs entirely in this page — nothing is uploaded.</small></p>
+    <div id="spinner" hidden aria-hidden="true"></div>
   </div>
 
   <div id="console">
