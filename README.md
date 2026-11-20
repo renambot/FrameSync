@@ -12,9 +12,9 @@ modern low-level web media stack:
 - **WebCodecs** (`VideoDecoder`, `AudioDecoder`, `VideoFrame`,
   `EncodedVideoChunk`) — the page owns the decode pipeline instead of
   trusting `<video>.currentTime`.
-- **MP4Box.js v2.4.1** (vendored as an ES module in `js/mp4box/`) — demuxes
-  the MP4 into a full sample table held in memory, so every frame is
-  addressable.
+- **MP4Box.js v2.4.1** (vendored as an ES module in `js/mp4box/`) — reads
+  the MP4's index into a full sample table, so every frame is addressable;
+  sample data is fetched in blocks as decoding reaches it.
 - **Canvas 2D** — each `VideoFrame` is drawn explicitly; nothing is
   interpolated or dropped silently.
 - **Web Audio** — decoded AAC is scheduled sample-accurately on the
@@ -82,6 +82,27 @@ Firefox 130+.
   *rendering* falls behind, frames are skipped to stay on clock (counted in
   the footer as "skipped for pacing"); if the *decoder* falls behind, the
   clock rebases so no frame is ever silently lost.
+
+## How a file is read
+
+Only the **index** is read when a file opens: the `moov` box, which names
+every sample's timestamp, position and size. For a normal file that is the
+first megabyte or so; for a file whose `moov` sits at the end (no
+`-movflags +faststart`) MP4Box says where to jump, and the page jumps there.
+Sample bytes are then fetched **in 8 MB blocks as decoding reaches them** — a
+local file through `Blob.slice`, a server file through HTTP `Range` requests —
+and a dozen recent blocks stay cached, so stepping back and forth inside a GOP
+costs nothing and a seek costs one block. The memory cost of a file is its
+index plus about 100 MB, whatever the file's size; a 5 GB wall movie opens as
+quickly as a 5 MB clip. The footer counts the bytes fetched and the times the
+decoder had to wait for data. A wait while playing behaves like any decoder
+stall: under the wall clock the clock rebases, under the audio or sync clock
+frames are skipped and counted, so a slow link shows up as pacing skips.
+
+The server streams files with byte ranges, so there is no size limit on
+served media (Node's whole-file read stops at 2 GiB, which used to surface as
+a 404). A static host that ignores `Range` still works: the page notices the
+plain 200 and takes the whole body instead, as before.
 
 A focused field owns the keyboard — the transport keys are ignored while you
 are typing in *Go to frame* or *conv*, or arrowing through a dropdown. Picking
@@ -495,9 +516,10 @@ box=1:boxcolor=black@0.7:boxborderw=20" \
 ## Files
 
 - `index.html` — UI (no build step, no external requests)
-- `server.js` — zero-dep Node: static files, `/sync` WebSocket, `/status`
+- `server.js` — zero-dep Node: static files streamed with byte ranges, `/sync` WebSocket, `/status`
 - `js/mp4box/` — vendored MP4Box.js v2.4.1 (native ES module, bridged to `window.MP4Box`)
-- `js/demuxer.js` — MP4Box wrapper → decoder configs + sample tables (video + audio)
+- `js/samplereader.js` — byte sources (File, URL with Range, buffer) and the block cache sample data is read through
+- `js/demuxer.js` — MP4Box wrapper → decoder configs + sample index (video + audio), from the moov alone
 - `js/player.js` — `FramePlayer`: decode pipeline, clock hierarchy, seek/step logic, loop range
 - `js/audio.js` — `AudioEngine`: AudioDecoder → sample-accurate Web Audio scheduling
 - `js/gpufilter.js` — `GPUFilter`: WebGPU/WGSL filter stage, incl. stereo 3D
@@ -516,9 +538,9 @@ box=1:boxcolor=black@0.7:boxborderw=20" \
   (AAC > MP3 > Opus/FLAC > AC-3). An unsupported or mid-stream-failing
   audio track degrades to silent playback — video and sync are unaffected.
   Opus-in-MP4 would still need `dOps` description extraction.
-- Whole file is held in memory (that's what makes random access instant);
-  fine up to a few GB, not for streaming. For streaming, the same pipeline
-  works with incremental `appendBuffer` + on-demand sample windows.
+- Fragmented MP4 (moov with `mvex`) keeps its sample tables in `moof`
+  boxes, so the whole file is walked once to collect them before play; the
+  data is still not retained. Ordinary files read only the index.
 - MP4/MOV containers only (WebM would need a different demuxer, e.g. jswebm).
 - Timecode display assumes constant frame rate (non-drop-frame); the frame
   index and media time are always exact regardless.

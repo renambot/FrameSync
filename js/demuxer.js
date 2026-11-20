@@ -1,133 +1,142 @@
 'use strict';
 
 /**
- * Demux an MP4 ArrayBuffer with MP4Box.js v2 (vendored ES module in
- * js/mp4box/, bridged onto window.MP4Box by index.html — demuxMP4 awaits
- * that bridge, so classic-script callers never race the module load).
+ * Demux an MP4 from a byte source (BlobByteSource / UrlByteSource / BufferByteSource,
+ * see samplereader.js) with MP4Box.js v2 (vendored ES module in js/mp4box/,
+ * bridged onto window.MP4Box by index.html — demuxMP4 awaits that bridge, so
+ * classic-script callers never race the module load).
  * Resolves with:
- *   video — { config: VideoDecoderConfig, samples: [...] }  (decode order)
- *   audio — { config: AudioDecoderConfig, samples: [...] } or null
- *   info  — human-facing metadata
+ *   video  — { config: VideoDecoderConfig, samples: [...] }  (decode order)
+ *   audio  — { config: AudioDecoderConfig, samples: [...] } or null
+ *   reader — SampleReader: where sample bytes come from, on demand
+ *   info   — human-facing metadata
  *
- * Sample shape: { ts, dts, duration (µs), isKey, data }.
+ * Sample shape: { ts, dts, duration (µs), isKey, offset, size } — where the
+ * bytes are, not the bytes. Only the index (the moov box) is read here: it
+ * names every sample's position and size, which is all random access needs.
+ * The data is fetched in blocks as decoding reaches it, so the memory cost
+ * of a file is its index plus a few blocks, whatever its size.
  *
- * The whole file stays in memory, which is what makes random frame-exact
- * seeking cheap: any sample is addressable instantly.
+ * Reading the index means following MP4Box: appendBuffer returns the next
+ * file position it wants, which skips over the mdat when the moov sits at
+ * the end (an un-"faststarted" file). Fragmented files (moov with mvex)
+ * keep no sample table in the moov, so for those the whole file is walked
+ * to collect the moof tables — the data still is not retained.
  */
-async function demuxMP4(arrayBuffer) {
+async function demuxMP4(source) {
   await window.mp4boxReady;
-  return new Promise((resolve, reject) => {
-    const file = MP4Box.createFile();
-    const videoSamples = [];
-    const audioSamples = [];
-    let videoTrack = null;
-    let audioTrack = null;
-    let videoConfig = null;
-    let audioConfig = null;
-    let failed = false;
+  const file = MP4Box.createFile(); // discards mdat payloads it is handed
+  let ready = null;
+  let error = null;
+  file.onError = (e) => { error = 'MP4Box could not parse this file: ' + e; };
+  file.onReady = (mp4info) => { ready = mp4info; };
 
-    // First failure wins and later ones are swallowed: MP4Box reports a bad
-    // file through several callbacks, and rejecting a settled promise again
-    // would replace a precise message with a vaguer one.
-    const fail = (msg) => {
-      if (!failed) {
-        failed = true;
-        reject(new Error(msg));
-      }
+  // Walk the file until the index is complete: one probe-sized read, then
+  // larger ones. MP4Box reports where to read next; no progress, or an
+  // implausible amount of index, means a file this parser cannot handle.
+  const INDEX_CAP = 512 << 20; // more index than this is not an index
+  let pos = 0, readBytes = 0, chunk = 1 << 20;
+  for (;;) {
+    if (error) throw new Error(error);
+    if (ready && !file.moov.mvex) break;
+    if (pos >= source.size) break;
+    const ab = await source.read(pos, chunk);
+    if (!ab.byteLength) break;
+    ab.fileStart = pos;
+    readBytes += ab.byteLength;
+    const next = file.appendBuffer(ab);
+    if (!ready && readBytes > INDEX_CAP) throw new Error('No readable index within the first 512 MB of this file.');
+    if (next === undefined || next === pos) throw new Error('This does not look like a valid MP4/MOV file.');
+    pos = next;
+    chunk = 4 << 20;
+  }
+  if (error) throw new Error(error);
+  if (!ready) throw new Error('This does not look like a valid MP4/MOV file.');
+
+  const videoTrack = ready.videoTracks && ready.videoTracks[0];
+  if (!videoTrack) throw new Error('No video track found in this file.');
+
+  const videoConfig = {
+    codec: videoTrack.codec,
+    codedWidth: videoTrack.video.width,
+    codedHeight: videoTrack.video.height,
+  };
+  const description = extractVideoDescription(file, videoTrack.id);
+  if (description) videoConfig.description = description;
+  const videoSamples = sampleIndex(file.getTrackSamplesInfo(videoTrack.id));
+  if (videoSamples.length === 0) throw new Error('The video track contains no readable samples.');
+
+  const audioTrack = pickAudioTrack(ready.audioTracks);
+  let audioConfig = null, audioSamples = [];
+  if (audioTrack) {
+    audioConfig = {
+      codec: webCodecsAudioCodec(audioTrack.codec),
+      sampleRate: audioTrack.audio.sample_rate,
+      numberOfChannels: audioTrack.audio.channel_count,
     };
-
-    file.onError = (e) => fail('MP4Box could not parse this file: ' + e);
-
-    file.onReady = (mp4info) => {
-      videoTrack = mp4info.videoTracks && mp4info.videoTracks[0];
-      if (!videoTrack) return fail('No video track found in this file.');
-
-      videoConfig = {
-        codec: videoTrack.codec,
-        codedWidth: videoTrack.video.width,
-        codedHeight: videoTrack.video.height,
-      };
-      const description = extractVideoDescription(file, videoTrack.id);
-      if (description) videoConfig.description = description;
-      file.setExtractionOptions(videoTrack.id, 'video', { nbSamples: 1000 });
-
-      audioTrack = pickAudioTrack(mp4info.audioTracks);
-      if (audioTrack) {
-        audioConfig = {
-          codec: webCodecsAudioCodec(audioTrack.codec),
-          sampleRate: audioTrack.audio.sample_rate,
-          numberOfChannels: audioTrack.audio.channel_count,
-        };
-        const asc = extractAudioSpecificConfig(file, audioTrack.id);
-        if (asc) {
-          audioConfig.description = asc;
-          // The stsd channel count is unreliable (often hardcoded 2);
-          // the AudioSpecificConfig is authoritative for AAC.
-          const parsed = parseAudioSpecificConfig(asc);
-          if (parsed) {
-            audioConfig.sampleRate = parsed.sampleRate;
-            audioConfig.numberOfChannels = parsed.channels;
-          }
-        }
-        fixupAudioConfig(audioConfig, file, audioTrack.id);
-        file.setExtractionOptions(audioTrack.id, 'audio', { nbSamples: 1000 });
+    const asc = extractAudioSpecificConfig(file, audioTrack.id);
+    if (asc) {
+      audioConfig.description = asc;
+      // The stsd channel count is unreliable (often hardcoded 2);
+      // the AudioSpecificConfig is authoritative for AAC.
+      const parsed = parseAudioSpecificConfig(asc);
+      if (parsed) {
+        audioConfig.sampleRate = parsed.sampleRate;
+        audioConfig.numberOfChannels = parsed.channels;
       }
+    }
+    fixupAudioConfig(audioConfig, file, audioTrack.id);
+    audioSamples = sampleIndex(file.getTrackSamplesInfo(audioTrack.id));
+  }
 
-      file.start();
-    };
+  normalizeTimestamps(file, videoTrack.id, videoSamples);
+  if (audioTrack) normalizeTimestamps(file, audioTrack.id, audioSamples);
 
-    file.onSamples = (trackId, user, newSamples) => {
-      const bucket = user === 'audio' ? audioSamples : videoSamples;
-      for (const s of newSamples) {
-        bucket.push({
-          ts: Math.round((s.cts * 1e6) / s.timescale),
-          dts: Math.round((s.dts * 1e6) / s.timescale),
-          duration: Math.round((s.duration * 1e6) / s.timescale),
-          isKey: s.is_sync,
-          data: s.data,
-        });
-      }
-    };
+  // Fragmented files with an empty moov report no track duration; the sample
+  // table knows the real end.
+  let durationSec = videoTrack.duration / videoTrack.timescale;
+  if (!(durationSec > 0)) {
+    let endUs = 0;
+    for (const v of videoSamples) endUs = Math.max(endUs, v.ts + v.duration);
+    durationSec = endUs / 1e6;
+  }
+  return {
+    video: { config: videoConfig, samples: videoSamples },
+    audio: audioTrack && audioSamples.length
+      ? { config: audioConfig, samples: audioSamples }
+      : null,
+    reader: new SampleReader(source),
+    info: {
+      codec: videoTrack.codec,
+      width: videoTrack.video.width,
+      height: videoTrack.video.height,
+      durationSec,
+      sampleCount: videoSamples.length,
+      nominalFps: videoSamples.length / durationSec,
+      audio: audioTrack ? {
+        codec: audioTrack.codec,
+        sampleRate: audioConfig.sampleRate,
+        channels: audioConfig.numberOfChannels,
+      } : null,
+      indexBytes: readBytes,
+    },
+  };
+}
 
-    // v2 wants an MP4BoxBuffer, which is just an ArrayBuffer carrying a
-    // fileStart marker — brand the buffer in place rather than paying
-    // MP4BoxBuffer.fromArrayBuffer's full copy (files can be hundreds of MB).
-    arrayBuffer.fileStart = 0;
-    file.appendBuffer(arrayBuffer, /* last: */ true);
-    file.flush();
-
-    // MP4Box extraction runs synchronously inside appendBuffer/flush;
-    // defer one tick so any trailing onSamples batch lands first.
-    setTimeout(() => {
-      if (failed) return;
-      if (!videoTrack) return fail('This does not look like a valid MP4/MOV file.');
-      if (videoSamples.length === 0) return fail('The video track contains no readable samples.');
-
-      normalizeTimestamps(file, videoTrack.id, videoSamples);
-      if (audioTrack) normalizeTimestamps(file, audioTrack.id, audioSamples);
-
-      const durationSec = videoTrack.duration / videoTrack.timescale;
-      resolve({
-        video: { config: videoConfig, samples: videoSamples },
-        audio: audioTrack && audioSamples.length
-          ? { config: audioConfig, samples: audioSamples }
-          : null,
-        info: {
-          codec: videoTrack.codec,
-          width: videoTrack.video.width,
-          height: videoTrack.video.height,
-          durationSec,
-          sampleCount: videoSamples.length,
-          nominalFps: videoSamples.length / durationSec,
-          audio: audioTrack ? {
-            codec: audioTrack.codec,
-            sampleRate: audioConfig.sampleRate,
-            channels: audioConfig.numberOfChannels,
-          } : null,
-        },
-      });
-    }, 0);
-  });
+/** MP4Box's per-sample table → the player's sample shape (positions, no data). */
+function sampleIndex(samples) {
+  const out = [];
+  for (const s of samples || []) {
+    out.push({
+      ts: Math.round((s.cts * 1e6) / s.timescale),
+      dts: Math.round((s.dts * 1e6) / s.timescale),
+      duration: Math.round((s.duration * 1e6) / s.timescale),
+      isKey: s.is_sync,
+      offset: s.offset,
+      size: s.size,
+    });
+  }
+  return out;
 }
 
 /**

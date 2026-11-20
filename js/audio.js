@@ -59,8 +59,9 @@ class AudioEngine {
    * worth tolerating: the player then runs video off the wall clock instead
    * of promoting audio to master.
    */
-  async load(config, samples) {
+  async load(config, samples, reader) {
     this.destroy(false);
+    this.reader = reader;
     this.supported = false;
     if (!('AudioDecoder' in window)) return false;
     try {
@@ -160,12 +161,20 @@ class AudioEngine {
         this.samples[this.feedPos].ts < horizonUs &&
         this.decoder.decodeQueueSize < 30
       ) {
-        const s = this.samples[this.feedPos++];
+        const s = this.samples[this.feedPos];
+        const data = this.reader.get(s);
+        if (!data) {
+          // Not fetched yet: ask for the block and let the 250 ms pump
+          // timer (or the fetch itself) come back to it.
+          this.reader.prefetch(s).then(() => this._pump(gen)).catch(() => {});
+          break;
+        }
+        this.feedPos++;
         this.decoder.decode(new EncodedAudioChunk({
           type: 'key',
           timestamp: s.ts,
           duration: s.duration,
-          data: s.data,
+          data,
         }));
       }
       if (this.feedPos >= this.samples.length && !this.endFed) {

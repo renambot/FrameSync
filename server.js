@@ -130,15 +130,53 @@ const server = http.createServer((req, res) => {
   if (p === '/') p = '/index.html';
   const file = path.normalize(path.join(ROOT, p));
   if (!file.startsWith(ROOT)) { res.writeHead(403); res.end(); return; }
-  fs.readFile(file, (err, data) => {
-    if (err) { res.writeHead(404); res.end('not found'); return; }
-    res.writeHead(200, {
+  serveFile(req, res, file);
+});
+
+/**
+ * Stream a file, honouring byte ranges. Streaming rather than reading the
+ * whole file matters twice over: fs.readFile refuses anything over 2 GiB,
+ * and the page now fetches sample windows on demand, so a 5 GB wall movie
+ * is served as a stream of small ranges instead of one giant body. Only a
+ * missing path is 404; any other failure is a 500 with its code, so a
+ * server-side limit can never again masquerade as "not found".
+ */
+function serveFile(req, res, file) {
+  fs.stat(file, (err, st) => {
+    if (err || !st.isFile()) {
+      const code = err && err.code !== 'ENOENT' ? 500 : 404;
+      res.writeHead(code);
+      res.end(code === 404 ? 'not found' : String(err.code || 'error'));
+      return;
+    }
+    const headers = {
       'content-type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream',
       'cache-control': 'no-cache',
-    });
-    res.end(data);
+      'accept-ranges': 'bytes',
+    };
+    let start = 0, end = st.size - 1, status = 200;
+    const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
+    if (range) {
+      if (range[1] === '' && range[2] === '') { /* "bytes=-": treat as the whole file */ }
+      else if (range[1] === '') { start = Math.max(0, st.size - Number(range[2])); } // suffix: last n bytes
+      else { start = Number(range[1]); if (range[2] !== '') end = Math.min(end, Number(range[2])); }
+      if (start > end || start >= st.size) {
+        res.writeHead(416, { 'content-range': `bytes */${st.size}` });
+        res.end();
+        return;
+      }
+      status = 206;
+      headers['content-range'] = `bytes ${start}-${end}/${st.size}`;
+    }
+    headers['content-length'] = end - start + 1;
+    res.writeHead(status, headers);
+    if (req.method === 'HEAD') { res.end(); return; }
+    const stream = fs.createReadStream(file, { start, end });
+    stream.on('error', () => res.destroy());
+    res.on('close', () => stream.destroy()); // an abandoned seek must not leak a handle
+    stream.pipe(res);
   });
-});
+}
 
 /** Video files under the served root (what the page's picker lists). */
 function listMedia() {

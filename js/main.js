@@ -158,9 +158,11 @@
 
   /** Player callback: pipeline health line (queue depths, pacing drops, active clock). */
   function onStats(s) {
+    const mb = (s.fetchedBytes || 0) / 1e6;
     statsEl.textContent =
       `decode queue ${s.decodeQueue} · buffered ${s.buffered} · ` +
-      `skipped for pacing ${s.dropped} · clock ${s.clock || 'wall'}`;
+      `skipped for pacing ${s.dropped} · clock ${s.clock || 'wall'} · ` +
+      `fetched ${mb < 100 ? mb.toFixed(1) : Math.round(mb)} MB · waits for data ${s.dataWaits || 0}`;
   }
 
   // ---- GOP strip: every keyframe in the file, plus the playhead --------
@@ -218,39 +220,41 @@
 
   // ---- loading ---------------------------------------------------------
 
+  /** A local file is read through Blob.slice as decoding reaches each block. */
   async function loadFile(file) {
-    return loadBuffer(await file.arrayBuffer(), file.name, null);
+    return loadSource(new BlobByteSource(file), file.name, null);
   }
 
   /**
-   * Load a server-relative URL. The whole file is fetched before demuxing —
-   * that is what makes every seek instant — so `loadingSrc` guards against a
-   * second load starting while one is in flight (a follower can be told to
-   * load the same src repeatedly while the first fetch is still running).
+   * Load a server-relative URL. Only the index is read up front; sample
+   * data arrives as Range requests while playing, so the file's size no
+   * longer matters to memory. `loadingSrc` guards against a second load
+   * starting while one is in flight (a follower can be told to load the
+   * same src repeatedly while the first index read is still running).
    */
   async function loadFromUrl(src) {
     loadingSrc = true; // one URL load at a time, whoever initiates it
     try {
-      const resp = await fetch(src);
-      if (!resp.ok) throw new Error(`Could not fetch ${src} (${resp.status})`);
-      return await loadBuffer(await resp.arrayBuffer(), src.split('/').pop(), src);
+      const source = await UrlByteSource.open(src, 1 << 20);
+      return await loadSource(source, src.split('/').pop(), src);
     } finally {
       loadingSrc = false;
     }
   }
 
   /**
-   * The one path every load funnels through: demux, configure video and
-   * audio, wire the player up, and reset the UI to the new file. Re-applies
-   * the pending filter and, for a follower, the last master state, so a file
-   * arriving late still lands in the right place with the right look.
+   * The one path every load funnels through: demux the index, configure
+   * video and audio, wire the player up, and reset the UI to the new file.
+   * Re-applies the pending filter and, for a follower, the last master
+   * state, so a file arriving late still lands in the right place with the
+   * right look.
    */
-  async function loadBuffer(buffer, name, src) {
+  async function loadSource(source, name, src) {
     clearError();
     dropHint.hidden = false;
-    dropHint.textContent = 'Demuxing ' + name + '…';
+    dropHint.textContent = 'Reading the index of ' + name + '…';
     try {
-      const demuxed = await demuxMP4(buffer);
+      const demuxed = await demuxMP4(source);
       meta = demuxed;
       fpsInt = Math.max(1, Math.round(demuxed.info.nominalFps));
 
@@ -268,11 +272,11 @@
       audioEngine.setVolume(prevVolume);
       audioEngine.setMuted(prevMuted);
       hasAudio = demuxed.audio
-        ? await audioEngine.load(demuxed.audio.config, demuxed.audio.samples)
+        ? await audioEngine.load(demuxed.audio.config, demuxed.audio.samples, demuxed.reader)
         : false;
       if (hasAudio) player.attachAudio(audioEngine);
 
-      await player.load(demuxed.video.config, demuxed.video.samples);
+      await player.load(demuxed.video.config, demuxed.video.samples, demuxed.reader);
 
       // Handy for sync experiments from the console / other pages.
       window.vsPlayer = player;
@@ -379,7 +383,7 @@
     lastMasterState = s;
     if (s.src && s.src !== loadedSrc) {
       // Not loaded yet. If a load is already in flight (e.g. the ?src param
-      // fetch), do NOT start a second one — loadBuffer re-runs adoption when
+      // fetch), do NOT start a second one — loadSource re-runs adoption when
       // it finishes.
       if (!loadingSrc) loadFromUrl(s.src).catch((err) => showError(String(err.message || err)));
       return;
@@ -452,7 +456,7 @@
   /**
    * Follower: adopt a master state. Filter and src changes are handled first
    * because they can require a load; the clock is only followed once the
-   * right file is actually in the player, and loadBuffer re-applies the state
+   * right file is actually in the player, and loadSource re-applies the state
    * on arrival. Playing states hand a mapping to followExternal() rather than
    * a position, so the follower keeps tracking between messages.
    */
@@ -470,7 +474,7 @@
     }
     if (s.src && s.src !== loadedSrc) {
       if (!loadingSrc) loadFromUrl(s.src).catch((err) => showError(String(err.message || err)));
-      return; // loadBuffer re-applies lastMasterState once loaded
+      return; // loadSource re-applies lastMasterState once loaded
     }
     if (!player || !player.frameCount || !sync) return;
     if (s.playing && s.rate !== 0) {

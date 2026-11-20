@@ -54,6 +54,7 @@ class FramePlayer {
     this.dropBelowTs = -1;
     this.endFlushed = false;
     this.flushing = false;
+    this.feedGen = 0;    // bumped by every seek, so late async completions can tell they are stale
 
     this.playing = false;
     this.loop = false;
@@ -79,6 +80,7 @@ class FramePlayer {
 
     this.MAX_QUEUE = 16;        // decoded frames held ahead of the playhead
     this.MAX_DECODE_QUEUE = 12; // chunks in flight inside the decoder
+    this.READ_AHEAD = 90;        // samples ahead of the feed to keep fetched (a few GOPs)
   }
 
   /** Give the player an AudioEngine; its clock masters playback at 1×. */
@@ -97,9 +99,11 @@ class FramePlayer {
    * the browser cannot decode the codec — the one load failure the caller
    * must surface, since there is no degraded mode to fall back to.
    */
-  async load(config, samples) {
+  async load(config, samples, reader) {
     this.destroy();
     this.samples = samples;
+    this.reader = reader; // where sample bytes come from, block by block
+    this.dataWaits = 0;   // times the feed loop found no bytes yet (stats)
 
     // Presentation order: B-frames arrive from the demuxer in decode order,
     // so sort indices by composition timestamp to get the true frame list.
@@ -158,7 +162,12 @@ class FramePlayer {
     for (const r of w) r();
   }
 
-  /** Keep the decoder fed, with backpressure on both queues. */
+  /**
+   * Keep the decoder fed, with backpressure on both queues. Sample bytes
+   * come from the reader's block cache; on a gap the loop stops, asks for
+   * the block, and runs again when it lands — reading only current state,
+   * so a fetch that completes after a seek simply feeds the new position.
+   */
   _fillQueue() {
     if (!this.decoder || this.decoder.state !== 'configured') return;
     while (
@@ -166,18 +175,40 @@ class FramePlayer {
       this.queue.length < this.MAX_QUEUE &&
       this.decoder.decodeQueueSize < this.MAX_DECODE_QUEUE
     ) {
-      const s = this.samples[this.feedPos++];
+      const s = this.samples[this.feedPos];
+      const data = this.reader.get(s);
+      if (!data) {
+        this.dataWaits++;
+        this.reader.prefetch(s).then(
+          () => this._fillQueue(),
+          // A failed fetch must not strand a _nextFrame() waiter: report it
+          // and wake them so the player surfaces an error instead of freezing.
+          (e) => { this.cb.onError?.(e); this._wake(); },
+        );
+        this._emitStats();
+        return;
+      }
+      this.feedPos++;
       this.decoder.decode(new EncodedVideoChunk({
         type: s.isKey ? 'key' : 'delta',
         timestamp: s.ts,
         duration: s.duration,
-        data: s.data,
+        data,
       }));
+      // Read ahead: keep the next block arriving while this one decodes.
+      const ahead = this.samples[Math.min(this.feedPos + this.READ_AHEAD, this.samples.length - 1)];
+      if (ahead && !this.reader.get(ahead)) this.reader.prefetch(ahead).catch(() => {});
     }
     if (this.feedPos >= this.samples.length && !this.endFlushed && !this.flushing) {
       this.flushing = true;
+      // A flush that completes after a later seek has reset the decoder must
+      // not mark the new position as ended: the seek bumped feedGen, and a
+      // stale completion is dropped. (The reset rejects a pending flush, but
+      // one that finished on the codec thread an instant earlier can still
+      // resolve afterwards.)
+      const gen = this.feedGen;
       this.decoder.flush()
-        .then(() => { this.endFlushed = true; this._wake(); })
+        .then(() => { if (gen !== this.feedGen) return; this.endFlushed = true; this._wake(); })
         .catch(() => {}) // aborted by reset() during a seek — expected
         .finally(() => { this.flushing = false; });
     }
@@ -332,6 +363,7 @@ class FramePlayer {
     let k = decIdx;
     while (k > 0 && !this.samples[k].isKey) k--;
 
+    this.feedGen++;
     this.decoder.reset();
     this.decoder.configure(this.config);
     for (const f of this.queue) f.close();
@@ -658,6 +690,8 @@ class FramePlayer {
       buffered: this.queue.length,
       dropped: this.droppedForPacing,
       clock: this.externalClock ? 'sync' : this.audioLive ? 'audio' : 'wall',
+      dataWaits: this.dataWaits,
+      fetchedBytes: this.reader ? this.reader.stats.bytes : 0,
     });
   }
 
