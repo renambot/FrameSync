@@ -860,7 +860,9 @@
     // And |L-R| is symmetric, so eye swap cannot change the difference view.
     const blocked = Boolean(filterUIBlocked) || role === 'follower';
     filterSel.disabled = blocked;
-    stereoLayoutSel.disabled = blocked || !kind;
+    // The layout describes the file, not the view, so it can be set before a
+    // 3D filter is chosen; it simply has no visible effect until one is.
+    stereoLayoutSel.disabled = blocked;
     convInput.disabled = blocked || !kind || kind === 'eye';
     btnSwapEyes.disabled = blocked || !kind || kind === 'diff';
   }

@@ -156,9 +156,11 @@ use and how the source packs the pair are independent choices, so they are
 two menus rather than one entry per combination. The **layout** menu sits
 beside *Open video…*, because it describes the file rather than the view; the
 ⇄ **swap eyes** button and the **conv** convergence field sit on the right
-with the filter. All three stay in place at all times and simply grey out
-when the chosen filter cannot use them — a control that came and went would
-shift everything beside it on every filter change. Swap is for displays whose
+with the filter. All three stay in place at all times — a control that came
+and went would shift everything beside it on every filter change. The layout
+is always live, since it can be set before a 3D filter is chosen and simply
+waits for one; swap and convergence grey out when the chosen filter cannot
+use them. Swap is for displays whose
 polarization phase, or glasses whose colours, run the other way round; it
 also exchanges which half the single-eye views show, and greys out for the
 difference view, which is symmetric in the eyes. Convergence greys out for
@@ -522,7 +524,7 @@ box=1:boxcolor=black@0.7:boxborderw=20" \
 | ⨯ | clear the loop range (appears only while one is set) |
 | ⛶ / F | fullscreen (stage only) |
 | filter dropdown | GPU filter (grayscale, sepia, invert, swirl, stereo 3D, single eye, difference, side-by-side) |
-| layout dropdown | stereo source layout — SBS, half SBS, top/bottom (greyed unless a 3D filter is on) |
+| layout dropdown | stereo source layout — SBS, half SBS, top/bottom (describes the file; takes effect when a 3D filter is on) |
 | conv | stereo convergence in px (greyed unless both eyes are on screen) |
 | ⇄ | swap left/right eye (greyed for the symmetric difference view) |
 | 🔗 | copy a launch URL for another node (always as a follower) |
