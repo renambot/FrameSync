@@ -412,10 +412,13 @@ http://SERVER:8417/?role=follower&tile=1,0,4,2&fullscreen&screen=0
 - **Launch URLs** do not have to be written by hand. Set a node up
   interactively — file, filter, stereo layout, eye swap, loop, target display
   — then press 🔗 to copy the URL that reproduces that state on the *other*
-  nodes, and paste it into each kiosk launcher. Wall geometry (`tile`,
-  `crop`, `wall`, `fit`) has no live UI, so it is carried over from however
-  the page was opened; everything else reflects the current controls, and
-  defaults are left out to keep the URL short. The role is always emitted as
+  nodes, and paste it into each kiosk launcher. The **wall row** under the
+  source controls holds the grid (width × height in displays), this node's
+  tile (column, row) and the fit mode; they apply live and go into the URL
+  as `tile=col,row,cols,rows` and `fit`, so the other nodes only change the
+  tile numbers. A `crop` from the launch URL has no field and is carried
+  over as it was, with `wall` beside it. Everything else reflects the
+  current controls, and defaults are left out to keep the URL short. The role is always emitted as
   `role=follower`, even when the page copying it is the master — the URL is
   for the nodes being deployed, only one client may own the timeline, and the
   server demotes the incumbent on every new master claim, so a `role=master`

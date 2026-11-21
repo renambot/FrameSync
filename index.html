@@ -385,6 +385,17 @@
     flex-wrap: wrap;
   }
   #source-row #filter-sel { margin-left: auto; }
+  /* Wall geometry: the grid this display belongs to and this node's place in
+     it. Its own row so the fields never reflow the view settings above. */
+  #wall-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  #wall-row input[type="number"] { width: 58px; }
+  #wall-row .sep { color: var(--muted); }
+  #wall-note { margin-left: auto; }
   /* The volume slider is the native control tinted by accent-color; the hand-drawn
      track and thumb below only apply where accent-color does not exist. The
      scrubber keeps its own styling regardless: its 4px track and 22px hit area
@@ -595,6 +606,27 @@
       </label>
       <button id="btn-swap-eyes" title="Swap left/right eye" aria-label="Swap left and right eye"
               aria-pressed="false">⇄</button>
+    </div>
+    <div id="wall-row">
+      <label class="goto">Wall
+        <input id="wall-cols" type="number" inputmode="numeric" min="1" max="64" step="1" value="1"
+               title="Wall width, in displays" aria-label="Wall width in displays">
+        <span class="sep">×</span>
+        <input id="wall-rows" type="number" inputmode="numeric" min="1" max="64" step="1" value="1"
+               title="Wall height, in displays" aria-label="Wall height in displays">
+      </label>
+      <label class="goto">Tile
+        <input id="tile-col" type="number" inputmode="numeric" min="0" step="1" value="0"
+               title="This display's column, 0 at the left" aria-label="This display's column">
+        <span class="sep">,</span>
+        <input id="tile-row" type="number" inputmode="numeric" min="0" step="1" value="0"
+               title="This display's row, 0 at the top" aria-label="This display's row">
+      </label>
+      <select id="fit-sel" title="How this display's slice is fitted" aria-label="Fit mode">
+        <option value="contain" selected>fit: contain</option>
+        <option value="fill">fit: fill</option>
+      </select>
+      <span id="wall-note" class="goto"></span>
     </div>
   </div>
 

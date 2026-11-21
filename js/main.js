@@ -39,6 +39,12 @@
   const convWrap = $('conv-wrap');
   const convInput = $('stereo-conv');
   const btnSwapEyes = $('btn-swap-eyes');
+  const wallColsInput = $('wall-cols');
+  const wallRowsInput = $('wall-rows');
+  const tileColInput = $('tile-col');
+  const tileRowInput = $('tile-row');
+  const fitSel = $('fit-sel');
+  const wallNote = $('wall-note');
 
   const slider = $('scrubber');
   const gopCanvas = $('gop-strip');
@@ -55,9 +61,12 @@
   let fpsInt = 25;
 
   let viewport = null;      // normalized tile/crop rect for tiled walls
-  let viewportFit = 'fill';
-  let wallGrid = null;
+  let viewportFit = 'contain';
+  let wallGrid = { cols: 1, rows: 1 };
+  let tilePos = { col: 0, row: 0 };
+  let cropRect = null;      // ?crop=x,y,w,h from the URL: wins over the tile, has no UI
   let viewportLabel = '';
+  let fileInfoBase = '';    // the info line without the wall part, rebuilt when the wall changes
   let sync = null;
   let role = 'solo';
   let loadedSrc = null;      // server-relative URL the file came from, if any
@@ -299,11 +308,11 @@
       const audioLabel = hasAudio
         ? `${i.audio.codec} ${(i.audio.sampleRate / 1000).toFixed(1)} kHz ${i.audio.channels} ch`
         : (i.audio ? `${i.audio.codec} audio unsupported` : 'no audio');
-      infoEl.textContent =
+      fileInfoBase =
         `${name} · ${i.codec} · ${i.width}×${i.height} · ` +
         `${i.nominalFps.toFixed(3)} fps · ${i.sampleCount} frames · ` +
-        `${keyframes} keyframes · ${i.durationSec.toFixed(3)} s · ${audioLabel}` +
-        (viewportLabel ? ` · ${viewportLabel}` : '');
+        `${keyframes} keyframes · ${i.durationSec.toFixed(3)} s · ${audioLabel}`;
+      renderFileInfo();
 
       frameTotalEl.textContent = i.sampleCount - 1;
       slider.max = i.sampleCount - 1;
@@ -785,6 +794,61 @@
   btnJumpFwd.addEventListener('click', () => jumpSeconds(1));
   rateSel.addEventListener('change', () => player?.setRate(Number(rateSel.value)));
 
+  // ---- wall geometry ----------------------------------------------------
+
+  /** The file-info line: the file's facts plus this node's place on the wall. */
+  function renderFileInfo() {
+    if (!fileInfoBase) return;
+    infoEl.textContent = fileInfoBase + (viewportLabel ? ` · ${viewportLabel}` : '');
+  }
+
+  /**
+   * Read the wall row, clamp it to sense (a tile must lie inside the grid),
+   * and apply it: the viewport the player blits, the per-eye tile the
+   * stereo stage cuts, and the info line. A 1×1 wall is no tiling at all.
+   * A crop from the URL overrides the tile, since it exists for bezel insets
+   * the grid cannot express; the row then only supplies the wall's shape.
+   */
+  function applyWall() {
+    const int = (el, lo, hi) => Math.max(lo, Math.min(hi, Math.round(Number(el.value)) || 0));
+    const cols = int(wallColsInput, 1, 64), rows = int(wallRowsInput, 1, 64);
+    tileColInput.max = String(cols - 1);
+    tileRowInput.max = String(rows - 1);
+    const col = int(tileColInput, 0, cols - 1), row = int(tileRowInput, 0, rows - 1);
+    wallColsInput.value = String(cols); wallRowsInput.value = String(rows);
+    tileColInput.value = String(col); tileRowInput.value = String(row);
+    const tiled = cols * rows > 1;
+    tileColInput.disabled = !tiled || Boolean(cropRect);
+    tileRowInput.disabled = !tiled || Boolean(cropRect);
+    wallGrid = { cols, rows };
+    tilePos = { col, row };
+    viewportFit = fitSel.value === 'fill' ? 'fill' : 'contain';
+    if (cropRect) {
+      viewport = cropRect;
+      viewportLabel = `crop ${cropRect.x},${cropRect.y} ${cropRect.w}×${cropRect.h}`;
+      wallNote.textContent = 'crop set by the launch URL';
+    } else if (tiled) {
+      viewport = { x: col / cols, y: row / rows, w: 1 / cols, h: 1 / rows };
+      viewportLabel = `tile ${col},${row} of ${cols}×${rows}`;
+      wallNote.textContent = '';
+    } else {
+      viewport = null;
+      viewportLabel = '';
+      wallNote.textContent = 'whole picture';
+    }
+    if (viewport && viewportFit === 'contain') viewportLabel += ' · contain';
+    fitSel.disabled = !viewport;
+    stage.classList.toggle('tiled', Boolean(viewport));
+    if (player) {
+      player.setViewport(viewport, { fit: viewportFit, wallGrid });
+      applyFilter(); // the stereo stage cuts its per-eye tile from the same geometry
+    }
+    renderFileInfo();
+  }
+  for (const el of [wallColsInput, wallRowsInput, tileColInput, tileRowInput, fitSel]) {
+    el.addEventListener('change', applyWall);
+  }
+
   // ---- GPU filters (WebGPU) ----------------------------------------------
 
   const FILTER_IDS = {
@@ -1124,7 +1188,7 @@
   window.addEventListener('pointerdown', () => { pointerDroveInput = true; }, true);
   window.addEventListener('keydown', () => { pointerDroveInput = false; }, true);
 
-  for (const menu of [filterSel, stereoLayoutSel, rateSel, screenSel, roleSel]) {
+  for (const menu of [filterSel, stereoLayoutSel, rateSel, screenSel, roleSel, fitSel]) {
     menu.addEventListener('change', () => {
       if (pointerDroveInput) stage.focus({ preventScroll: true });
     });
@@ -1177,24 +1241,29 @@
   // Wall geometry is launch-time only — there is no UI that changes it — so
   // it rides along verbatim instead of being reconstructed from the parsed
   // viewport rect, which would be lossy (?tile and ?crop both land there).
-  const LAUNCH_PASSTHROUGH = ['tile', 'crop', 'wall', 'fit'];
-
   /**
    * The URL that launches *another* node with this one's setup: live UI
-   * state (src, loop, filter, stereo layout, eye swap, target display,
-   * fullscreen) on top of the launch-time wall geometry. Setting up a wall
-   * means writing one of these per node by hand today, so the output is
-   * optimised for a human reading it: flags stay bare (`?loop`, not
-   * `?loop=`), and the slashes in a path and the commas in a grid spec are
-   * left as themselves — both are legal in a query value, and `tile=1%2C0`
-   * is unreadable.
+   * state (wall grid, tile, fit, src, loop, filter, stereo layout, eye swap,
+   * target display, fullscreen). Setting up a wall means writing one of
+   * these per node, so the output is optimised for a human reading it: flags
+   * stay bare (`?loop`, not `?loop=`), and the slashes in a path and the
+   * commas in a grid spec are left as themselves — both are legal in a query
+   * value, and `tile=1%2C0` is unreadable. The tile is this node's own; the
+   * other nodes change that one number.
    */
   function launchUrl() {
     const enc = (v) => encodeURIComponent(v).replace(/%2F/g, '/').replace(/%2C/g, ',');
-    const launched = new URLSearchParams(location.search);
     const q = [];
-    for (const k of LAUNCH_PASSTHROUGH) {
-      if (launched.has(k)) q.push(`${k}=${enc(launched.get(k))}`);
+    const tiled = wallGrid.cols * wallGrid.rows > 1;
+    if (cropRect) {
+      // A crop from the URL has no UI and keeps its meaning; under contain it
+      // needs the wall's shape to go with it.
+      q.push(`crop=${[cropRect.x, cropRect.y, cropRect.w, cropRect.h].join(',')}`);
+      if (tiled) q.push(`wall=${wallGrid.cols},${wallGrid.rows}`);
+      if (viewportFit === 'contain') q.push('fit=contain');
+    } else if (tiled) {
+      q.push(`tile=${tilePos.col},${tilePos.row},${wallGrid.cols},${wallGrid.rows}`);
+      if (viewportFit === 'fill') q.push('fit=fill');
     }
     if (loadedSrc) q.push(`src=${enc(loadedSrc)}`);
     // Always follower, never master, even when this page IS the master: the
@@ -1270,23 +1339,19 @@
   // combined surface — letterboxed globally, never distorted; ?fit=fill
   // stretches the slice edge-to-edge (for content pre-matched to the wall).
   // ?wall=cols,rows supplies wall geometry when using ?crop with contain.
+  // The URL seeds the wall row; applyWall() then owns the geometry.
   const paramTile = params.get('tile');
   if (paramTile) {
     const [col, row, cols, rows] = paramTile.split(',').map(Number);
     if (cols >= 1 && rows >= 1 && col >= 0 && col < cols && row >= 0 && row < rows) {
-      viewport = { x: col / cols, y: row / rows, w: 1 / cols, h: 1 / rows };
       wallGrid = { cols, rows };
-      viewportFit = 'contain';
-      viewportLabel = `tile ${col},${row} of ${cols}×${rows}`;
+      tilePos = { col, row };
     }
   }
   const paramCrop = params.get('crop');
   if (paramCrop) {
     const [x, y, w, h] = paramCrop.split(',').map(Number);
-    if (w > 0 && h > 0 && x >= 0 && y >= 0 && x + w <= 1 && y + h <= 1) {
-      viewport = { x, y, w, h };
-      viewportLabel = `crop ${x},${y} ${w}×${h}`;
-    }
+    if (w > 0 && h > 0 && x >= 0 && y >= 0 && x + w <= 1 && y + h <= 1) cropRect = { x, y, w, h };
   }
   const paramWall = params.get('wall');
   if (paramWall) {
@@ -1294,9 +1359,14 @@
     if (cols >= 1 && rows >= 1) wallGrid = { cols, rows };
   }
   const paramFit = params.get('fit');
-  if (paramFit === 'contain' || paramFit === 'fill') viewportFit = paramFit;
-  if (viewport && viewportFit === 'contain') viewportLabel += ' · contain';
-  if (viewport) stage.classList.add('tiled');
+  // A bare crop is a source crop (fill) unless told otherwise; a tile aspect-fits.
+  viewportFit = paramFit === 'contain' || paramFit === 'fill' ? paramFit : (cropRect && !paramTile ? 'fill' : 'contain');
+  wallColsInput.value = String(wallGrid.cols);
+  wallRowsInput.value = String(wallGrid.rows);
+  tileColInput.value = String(tilePos.col);
+  tileRowInput.value = String(tilePos.row);
+  fitSel.value = viewportFit;
+  applyWall();
 
   if (params.has('loop')) setLoop(true);
   let paramFilter = params.get('filter');
